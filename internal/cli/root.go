@@ -4,12 +4,20 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lukeeskinner/tuilor/internal/tui"
 )
 
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "tuilor",
 		Short: "Build terminal applications with AI and MCP",
+
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := tea.NewProgram(tui.NewModel()).Run()
+			return err
+		},
 	}
 
 	version := &cobra.Command{
