@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -11,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lukeeskinner/tuilor/internal/app"
+	"github.com/lukeeskinner/tuilor/internal/localapp"
 	"github.com/lukeeskinner/tuilor/internal/mcpclient"
 )
 
@@ -20,8 +20,11 @@ type Model struct {
 	cursor, appCursor int
 	screen            string
 	files             []string
+	fileLabels        []string
+	localCall         *localInvocation
 	err               error
 	preview           previewModel
+	creator           *creationModel
 	tools             []mcpclient.Tool
 	confirmation      *confirmationModel
 	call              *invocation
@@ -32,6 +35,7 @@ type Model struct {
 }
 
 type loadedAppMsg struct {
+	local      *localapp.Store
 	definition *app.Definition
 	err        error
 	tools      []mcpclient.Tool
@@ -47,8 +51,8 @@ func NewModel(appsDir, server string) Model {
 
 func (m Model) Init() tea.Cmd { return nil }
 
-// Close waits for SDK-owned subprocess cleanup after an external cancellation
-// or terminal error. The CLI calls it on the final model returned by Bubble Tea.
+// Close waits for the pending operation's cleanup after external cancellation
+// or a terminal error. The CLI calls it on the final model returned by Bubble Tea.
 func (m Model) Close() error {
 	if m.cancel == nil {
 		return nil
@@ -58,7 +62,7 @@ func (m Model) Close() error {
 	case <-m.done:
 		return nil
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("MCP operation did not finish cleanup within 5 seconds")
+		return fmt.Errorf("background operation did not finish cleanup within 5 seconds")
 	}
 }
 
@@ -66,6 +70,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
+		if m.creator != nil {
+			m.creator.resize(m.width, m.height)
+		}
 		if m.confirmation != nil {
 			m.confirmation.resize(m.width, m.height)
 		}
@@ -74,6 +81,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.preview, cmd = m.preview.Update(msg)
 			return m, cmd
 		}
+	case generatedAppMsg:
+		return m.generationResult(msg)
+	case changedLocalMsg:
+		return m.localResult(msg)
+	case savedAppMsg:
+		return m.saveResult(msg)
 	case calledToolMsg:
 		m.loading, m.cancel, m.done = false, nil, nil
 		if m.quitting {
@@ -106,11 +119,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = "preview"
 			var cmd tea.Cmd
 			m.preview, cmd = newPreview(msg.definition, m.width, m.height)
+			if msg.local != nil {
+				m.preview.local = msg.local
+				m.preview.savedPath = msg.local.Path
+				m.preview.renderContent(true)
+			}
 			return m, cmd
 		}
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.preview.definition == nil) {
+		if key == "ctrl+c" || (key == "q" && m.preview.definition == nil && m.screen != "create" && m.screen != "generating" && m.screen != "cancelgeneration") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -124,6 +142,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
+			case "saving":
+				return m, nil
+			case "generating", "cancelgeneration":
+				m.cancel()
+				m.screen = "cancelgeneration"
+			case "create":
+				m.creator.prompt.Blur()
+				m.screen = "home"
+			case "localdelete":
+				m.localCall = nil
+				m.screen = "preview"
+				return m, m.preview.focusInput()
 			case "confirm":
 				m.confirmation, m.screen = nil, "preview"
 				return m, m.preview.focusInput()
@@ -134,17 +164,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 				m.screen = "apps"
 			case "preview":
-				m.preview, m.screen = previewModel{}, "apps"
-				m.tools = nil
+				if m.preview.draft {
+					m.preview, m.tools, m.screen = previewModel{}, nil, "create"
+					m.creator.message = "Unsaved app discarded. Your prompt is preserved."
+					m.creator.resize(m.width, m.height)
+					return m, m.creator.prompt.Focus()
+				}
+				m.returnToLibrary(m.preview.savedPath)
 			default:
 				m.screen = "home"
 			}
 			return m, nil
 		}
 		switch m.screen {
+		case "create":
+			if key == "ctrl+g" {
+				return m.beginGeneration()
+			}
 		case "preview":
+			if key == "ctrl+s" {
+				return m.saveDraft()
+			}
+			if m.preview.local != nil && (key == "enter" || key == " " || key == "delete") {
+				return m.requestLocal(msg)
+			}
 			if key == "enter" {
 				return m.requestSubmission()
+			}
+		case "localdelete":
+			if key == "y" && m.width >= 30 && m.height >= 6 {
+				return m.startLocal(*m.localCall)
 			}
 		case "confirm":
 			if key == "y" && m.width >= 30 && m.height >= 6 {
@@ -165,6 +214,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.screen, m.appCursor = "apps", 0
 					m.readLibrary()
 				}
+				if m.cursor == 1 {
+					if m.creator == nil {
+						m.creator = newCreation()
+					}
+					m.creator.resize(m.width, m.height)
+					m.screen = "create"
+					return m, m.creator.prompt.Focus()
+				}
 			}
 		case "apps":
 			switch key {
@@ -174,10 +231,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.appCursor = max(0, min(len(m.files)-1, m.appCursor+1))
 			case "enter":
 				if m.loading || len(m.files) == 0 {
-					return m, nil
-				}
-				if strings.TrimSpace(m.server) == "" {
-					m.err = fmt.Errorf("start Tuilor with --server /path/to/trusted-mcp-server to open an app")
 					return m, nil
 				}
 				// The request owns its context; Esc and Close cancel its lifetime.
@@ -193,6 +246,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	if m.screen == "create" {
+		var cmd tea.Cmd
+		m.creator.prompt, cmd = m.creator.prompt.Update(msg)
+		return m, cmd
+	}
 	if m.screen == "preview" {
 		var cmd tea.Cmd
 		m.preview, cmd = m.preview.Update(msg)
@@ -201,54 +259,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *Model) readLibrary() {
-	m.files, m.err = nil, nil
-	entries, err := os.ReadDir(m.appsDir) // ReadDir sorts entries by filename.
-	if os.IsNotExist(err) {
-		return
-	}
-	if err != nil {
-		m.err = fmt.Errorf("read app directory: %w", err)
-		return
-	}
-	for _, entry := range entries {
-		if entry.Type().IsRegular() && filepath.Ext(entry.Name()) == ".json" {
-			m.files = append(m.files, entry.Name())
-		}
-	}
-}
-
-func loadApp(ctx context.Context, path, server string) loadedAppMsg {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return loadedAppMsg{err: fmt.Errorf("read app: %w", err)}
-	}
-	tools, err := mcpclient.ListTools(ctx, server) // Closes the session before returning.
-	if err != nil {
-		return loadedAppMsg{err: err}
-	}
-	capabilities := make([]app.Capability, 0, len(tools))
-	for _, tool := range tools {
-		capabilities = append(capabilities, app.Capability{Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema})
-	}
-	definition, err := app.Parse(data, capabilities)
-	if err == nil {
-		err = ctx.Err()
-	}
-	return loadedAppMsg{definition: definition, err: err, tools: tools}
-}
-
 func (m Model) View() string {
 	if m.quitting {
-		return "Closing MCP connection…\n"
+		return "Stopping current operation…\n"
 	}
 	switch m.screen {
 	case "home":
 		return "Welcome to Tuilor!\n\n" + menu(m.choices, m.cursor, m.height) + "\n↑↓ Navigate • Enter Select • q Quit\n"
 	case "apps":
-		body := menu(m.files, m.appCursor, m.height)
+		body := menu(m.fileLabels, m.appCursor, m.height)
 		if len(m.files) == 0 && m.err == nil {
-			body = "No saved apps. Generate one with tuilor create.\n"
+			body = "No saved apps. Choose Create App on the home screen.\n"
 		}
 		if m.loading {
 			body += "Stopping previous validation…\n"
@@ -257,10 +278,20 @@ func (m Model) View() string {
 			body += "\n" + escapeControls(m.err.Error()) + "\n"
 		}
 		return "My Apps\n\n" + body + "\n↑↓ Navigate • Enter Open • Esc Back • q Quit\n"
+	case "create":
+		return m.creator.View(m.server, m.width, m.height)
+	case "generating":
+		return "Generating app with OpenAI…\n\nEsc Cancel • Ctrl+C Quit\n"
+	case "cancelgeneration":
+		return "Canceling generation…\n\nYour prompt will be preserved.\n"
+	case "saving":
+		return "Saving app…\n"
 	case "loading":
-		return "Validating app against MCP tools…\n\nEsc Cancel • Ctrl+C Quit\n"
+		return "Opening and validating app…\n\nEsc Cancel • Ctrl+C Quit\n"
 	case "preview":
 		return m.preview.View()
+	case "localdelete":
+		return m.localDeleteView()
 	case "confirm":
 		return m.confirmation.View()
 	case "calling":

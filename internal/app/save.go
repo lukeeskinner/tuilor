@@ -8,6 +8,9 @@ import (
 )
 
 func Save(definition *Definition, directory string) (path string, err error) {
+	if definition == nil || definition.Version != 1 {
+		return "", fmt.Errorf("flat JSON saves require a version 1 MCP app; local apps must be saved as bundles")
+	}
 	data, err := json.MarshalIndent(definition, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("encode app: %w", err)

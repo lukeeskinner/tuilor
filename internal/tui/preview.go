@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lukeeskinner/tuilor/internal/app"
+	"github.com/lukeeskinner/tuilor/internal/localapp"
 )
 
 // previewModel owns editable state separately from the saved definition.
@@ -23,6 +24,11 @@ type previewModel struct {
 	resultLine    int
 	viewport      viewport.Model
 	width, height int
+	draft         bool
+	savedPath     string
+	saveMessage   string
+	local         *localapp.Store
+	selected      map[[2]int]int
 }
 
 // A submit button has input == -1. This also makes zero-input forms accessible.
@@ -36,9 +42,16 @@ func newPreview(definition *app.Definition, width, height int) (previewModel, te
 		targets:    make([][]focusTarget, len(definition.Pages)),
 		results:    make(map[[2]int]string),
 		viewport:   viewport.New(1, 1),
+		selected:   make(map[[2]int]int),
+	}
+	if definition.Version == 2 {
+		p.local, _ = localapp.New(definition)
 	}
 	for page, content := range definition.Pages {
 		for form, component := range content.Components {
+			if component.Type == "list" {
+				p.targets[page] = append(p.targets[page], focusTarget{form, -2})
+			}
 			for range component.Fields {
 				input := textinput.New()
 				input.Prompt = "> "
@@ -95,6 +108,17 @@ func (p previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
 		p.renderContent(true)
 		return p, nil
 	case tea.KeyMsg:
+		if target, ok := p.activeTarget(); ok && target.input == -2 && (msg.String() == "up" || msg.String() == "down") {
+			key := [2]int{p.page, target.form}
+			count := len(p.local.Records(p.definition.Pages[p.page].Components[target.form].Collection))
+			direction := 1
+			if msg.String() == "up" {
+				direction = -1
+			}
+			p.selected[key] = max(0, min(p.selected[key]+direction, count-1))
+			p.renderContent(true)
+			return p, nil
+		}
 		switch msg.String() {
 		case "ctrl+n", "ctrl+p":
 			p.blurInput()
@@ -144,12 +168,42 @@ func (p *previewModel) renderContent(ensureVisible bool) {
 		lines = append(lines, strings.Split(wrapped, "\n")...)
 	}
 	fieldIndex, focusedLine := 0, -1
+	if p.saveMessage != "" {
+		appendText(p.saveMessage)
+		lines = append(lines, "")
+	}
 	target, hasTarget := p.activeTarget()
 	p.resultLine = -1
 	for form, component := range p.definition.Pages[p.page].Components {
 		switch component.Type {
 		case "text":
 			appendText(component.Text)
+		case "list":
+			appendText(component.Title)
+			rows := p.local.Records(component.Collection)
+			key := [2]int{p.page, form}
+			p.selected[key] = max(0, min(p.selected[key], len(rows)-1))
+			if len(rows) == 0 {
+				if hasTarget && target.form == form && target.input == -2 {
+					focusedLine = len(lines)
+				}
+				appendText("No records yet.")
+			}
+			for i, row := range rows {
+				prefix := "  "
+				if hasTarget && target.form == form && target.input == -2 && i == p.selected[key] {
+					prefix = "> "
+					focusedLine = len(lines)
+				}
+				if component.StatusField != "" {
+					if row.Values[component.StatusField] == true {
+						prefix += "[x] "
+					} else {
+						prefix += "[ ] "
+					}
+				}
+				appendText(prefix + row.Values[component.LabelField].(string))
+			}
 		case "form":
 			appendText(component.Title)
 			for _, field := range component.Fields {
@@ -160,9 +214,13 @@ func (p *previewModel) renderContent(ensureVisible bool) {
 				lines = append(lines, p.inputs[p.page][fieldIndex].View())
 				fieldIndex++
 			}
-			button := "  [ Submit: " + component.Action.Tool + " ]"
+			label := "Add"
+			if component.Action != nil {
+				label = "Submit: " + component.Action.Tool
+			}
+			button := "  [ " + label + " ]"
 			if hasTarget && target.form == form && target.input < 0 {
-				button = "> [ Submit: " + component.Action.Tool + " ]"
+				button = "> [ " + label + " ]"
 				focusedLine = len(lines)
 			}
 			appendText(button)
@@ -194,9 +252,19 @@ func (p previewModel) View() string {
 	}
 	header := escapeControls(p.definition.Name) + " — " + escapeControls(p.definition.Pages[p.page].Title)
 	status := fmt.Sprintf("App · page %d/%d · calls require confirmation", p.page+1, len(p.definition.Pages))
+	help := "Tab/Shift+Tab Focus · Enter Submit · PgUp/PgDn Scroll"
+	if p.local != nil {
+		status = fmt.Sprintf("Local app · page %d/%d · changes saved automatically", p.page+1, len(p.definition.Pages))
+		help = "Tab Focus · Enter Add · ↑↓ Select · Space Update · Del Delete"
+	}
+	footer := "Ctrl+N/P Pages · Esc Back · Ctrl+C Quit"
+	if p.draft {
+		status = fmt.Sprintf("Unsaved app · page %d/%d · Ctrl+S Save", p.page+1, len(p.definition.Pages))
+		footer = "Ctrl+N/P Pages · Esc Discard · Ctrl+C Quit"
+	}
 	return strings.Join([]string{
 		line.Render(header), line.Render(status), p.viewport.View(),
-		line.Render("Tab/Shift+Tab Focus · Enter Submit · PgUp/PgDn Scroll"),
-		line.Render("Ctrl+N/P Pages · Esc Back · Ctrl+C Quit"),
+		line.Render(help),
+		line.Render(footer),
 	}, "\n")
 }

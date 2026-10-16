@@ -1,4 +1,4 @@
-// Package app defines the declarative format shared by generation and a future runtime.
+// Package app defines the declarative format shared by generation and the runtime.
 // Definitions describe intent; they do not grant permission to execute tools.
 package app
 
@@ -15,9 +15,10 @@ import (
 var schemaJSON []byte
 
 type Definition struct {
-	Version int    `json:"version"`
-	Name    string `json:"name"`
-	Pages   []Page `json:"pages"`
+	Version     int          `json:"version"`
+	Name        string       `json:"name"`
+	Pages       []Page       `json:"pages"`
+	Collections []Collection `json:"collections,omitempty"`
 }
 
 type Page struct {
@@ -28,17 +29,22 @@ type Page struct {
 
 // Component is a closed union: text uses Text; form uses ID, Title, Fields, Action.
 type Component struct {
-	Type   string  `json:"type"`
-	Text   string  `json:"text,omitempty"`
-	ID     string  `json:"id,omitempty"`
-	Title  string  `json:"title,omitempty"`
-	Fields []Field `json:"fields,omitempty"`
-	Action *Action `json:"action,omitempty"`
+	Type        string        `json:"type"`
+	Text        string        `json:"text,omitempty"`
+	ID          string        `json:"id,omitempty"`
+	Title       string        `json:"title,omitempty"`
+	Fields      []Field       `json:"fields,omitempty"`
+	Action      *Action       `json:"action,omitempty"`
+	LocalAction *LocalAction  `json:"local_action,omitempty"`
+	Collection  string        `json:"collection,omitempty"`
+	LabelField  string        `json:"label_field,omitempty"`
+	StatusField string        `json:"status_field,omitempty"`
+	Actions     []LocalAction `json:"actions,omitempty"`
 }
 
 // MarshalJSON retains required empty fields for forms bound to zero-argument tools.
 func (c Component) MarshalJSON() ([]byte, error) {
-	if c.Type == "form" {
+	if c.Type == "form" && c.LocalAction == nil {
 		fields := c.Fields
 		if fields == nil {
 			fields = []Field{}
@@ -50,6 +56,21 @@ func (c Component) MarshalJSON() ([]byte, error) {
 			Fields []Field `json:"fields"`
 			Action *Action `json:"action"`
 		}{c.Type, c.ID, c.Title, fields, c.Action})
+	}
+	if c.Type == "list" {
+		actions := c.Actions
+		if actions == nil {
+			actions = []LocalAction{}
+		}
+		return json.Marshal(struct {
+			Type        string        `json:"type"`
+			ID          string        `json:"id"`
+			Title       string        `json:"title"`
+			Collection  string        `json:"collection"`
+			LabelField  string        `json:"label_field"`
+			StatusField string        `json:"status_field"`
+			Actions     []LocalAction `json:"actions"`
+		}{c.Type, c.ID, c.Title, c.Collection, c.LabelField, c.StatusField, actions})
 	}
 	type plain Component
 	return json.Marshal(plain(c))
@@ -95,7 +116,11 @@ func Parse(data []byte, capabilities []Capability) (*Definition, error) {
 		return nil, fmt.Errorf("decode app JSON: %w", err)
 	}
 	var schema jsonschema.Schema
-	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+	dataSchema := schemaJSON
+	if object, ok := value.(map[string]any); ok && object["version"] == float64(2) {
+		dataSchema = localSchemaJSON
+	}
+	if err := json.Unmarshal(dataSchema, &schema); err != nil {
 		return nil, fmt.Errorf("decode app schema: %w", err)
 	}
 	resolved, err := schema.Resolve(nil)
@@ -118,6 +143,9 @@ func Parse(data []byte, capabilities []Capability) (*Definition, error) {
 // Validate checks supported components and semantic references. Use Parse when
 // loading JSON so missing properties and unknown keys are checked as well.
 func (d Definition) Validate(capabilities []Capability) error {
+	if d.Version == 2 {
+		return d.validateLocal()
+	}
 	if d.Version != 1 || strings.TrimSpace(d.Name) == "" || len(d.Pages) == 0 {
 		return fmt.Errorf("app requires version 1, a name, and at least one page")
 	}

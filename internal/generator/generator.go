@@ -66,5 +66,8 @@ func Generate(ctx context.Context, provider Provider, prompt string, capabilitie
 	if err != nil {
 		return nil, fmt.Errorf("generated definition rejected: %w", err)
 	}
+	if definition.Version != 1 {
+		return nil, fmt.Errorf("MCP generation requires a version 1 definition")
+	}
 	return definition, nil
 }

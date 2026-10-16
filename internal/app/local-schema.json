@@ -1,0 +1,124 @@
+{
+  "type": "object", "additionalProperties": false,
+  "required": ["version", "name", "collections", "pages"],
+  "properties": {
+    "version": {"type": "integer", "enum": [2]},
+    "name": {"type": "string", "minLength": 1},
+    "collections": {"type": "array", "items": {"$ref": "#/$defs/collection"}, "minItems": 1},
+    "pages": {"type": "array", "items": {"$ref": "#/$defs/page"}, "minItems": 1}
+  },
+  "$defs": {
+    "text": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "text"],
+      "properties": {
+        "type": {"type": "string", "enum": ["text"]},
+        "text": {"type": "string", "minLength": 1}
+      }
+    },
+    "field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type", "label"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "enum": ["text_input"]},
+        "label": {"type": "string", "minLength": 1}
+      }
+    },
+    "binding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["parameter", "field"],
+      "properties": {
+        "parameter": {"type": "string", "minLength": 1},
+        "field": {"type": "string", "minLength": 1}
+      }
+    },
+    "collection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "fields"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/collection_field"}, "minItems": 1}
+      }
+    },
+    "collection_field": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "type"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "type": {"type": "string", "enum": ["text", "boolean"]}
+      }
+    },
+    "value": {
+      "type": "object", "additionalProperties": false,
+      "required": ["field", "value"],
+      "properties": {
+        "field": {"type": "string", "minLength": 1},
+        "value": {"type": ["string", "boolean"]}
+      }
+    },
+    "insert_action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "collection", "bindings", "values"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["insert"]},
+        "collection": {"type": "string", "minLength": 1},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/binding"}, "minItems": 1},
+        "values": {"type": "array", "items": {"$ref": "#/$defs/value"}, "maxItems": 0}
+      }
+    },
+    "update_action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "collection", "bindings", "values"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["update"]},
+        "collection": {"type": "string", "minLength": 1},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/binding"}, "maxItems": 0},
+        "values": {"type": "array", "items": {"$ref": "#/$defs/value"}, "minItems": 1}
+      }
+    },
+    "delete_action": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "collection", "bindings", "values"],
+      "properties": {
+        "kind": {"type": "string", "enum": ["delete"]},
+        "collection": {"type": "string", "minLength": 1},
+        "bindings": {"type": "array", "items": {"$ref": "#/$defs/binding"}, "maxItems": 0},
+        "values": {"type": "array", "items": {"$ref": "#/$defs/value"}, "maxItems": 0}
+      }
+    },
+    "form": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "id", "title", "fields", "local_action"],
+      "properties": {
+        "type": {"type": "string", "enum": ["form"]},
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "fields": {"type": "array", "items": {"$ref": "#/$defs/field"}, "minItems": 1},
+        "local_action": {"$ref": "#/$defs/insert_action"}
+      }
+    },
+    "list": {
+      "type": "object", "additionalProperties": false,
+      "required": ["type", "id", "title", "collection", "label_field", "status_field", "actions"],
+      "properties": {
+        "type": {"type": "string", "enum": ["list"]},
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "collection": {"type": "string", "minLength": 1},
+        "label_field": {"type": "string", "minLength": 1},
+        "status_field": {"type": "string"},
+        "actions": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/update_action"}, {"$ref": "#/$defs/delete_action"}]}}
+      }
+    },
+    "page": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "title", "components"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "components": {"type": "array", "items": {"anyOf": [{"$ref": "#/$defs/text"}, {"$ref": "#/$defs/form"}, {"$ref": "#/$defs/list"}]}, "minItems": 1}
+      }
+    }
+  }
+}

@@ -32,7 +32,7 @@ func NewRootCommand() *cobra.Command {
 			return err
 		},
 	}
-	root.Flags().StringVar(&server, "server", "", "Trusted local MCP executable for app validation")
+	root.Flags().StringVar(&server, "server", "", "Optional trusted MCP executable for generation and MCP apps")
 	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved app JSON files")
 
 	version := &cobra.Command{
