@@ -2,27 +2,38 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"github.com/lukeeskinner/tuilor/internal/mcpclient"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/lukeeskinner/tuilor/internal/mcpclient"
 	"github.com/lukeeskinner/tuilor/internal/tui"
 )
 
 func NewRootCommand() *cobra.Command {
+	var server, appsDir string
 	root := &cobra.Command{
 		Use:           "tuilor",
 		Short:         "Build terminal applications with AI and MCP",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := tea.NewProgram(tui.NewModel()).Run()
+			ctx, cancel := context.WithCancel(cmd.Context())
+			defer cancel()
+			model, err := tea.NewProgram(tui.NewModel(appsDir, server),
+				tea.WithContext(ctx), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()),
+			).Run()
+			if final, ok := model.(tui.Model); ok {
+				err = errors.Join(err, final.Close())
+			}
 			return err
 		},
 	}
+	root.Flags().StringVar(&server, "server", "", "Trusted local MCP executable for app validation")
+	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved app JSON files")
 
 	version := &cobra.Command{
 		Use:   "version",

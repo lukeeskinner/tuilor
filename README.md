@@ -2,74 +2,107 @@
 
 **Build your own terminal applications with AI + MCP.**
 
-Tuilor is a planned open-source application builder that turns natural-language
-requests and connected Model Context Protocol (MCP) capabilities into reusable
-terminal applications. AI will generate declarative JSON definitions; a Go runtime
-will execute and render validated definitions. Routine interactions should run
-without repeated LLM calls.
+Tuilor generates declarative JSON apps from natural-language requests and tools
+discovered from a trusted local MCP server. You can open saved apps through the
+Bubble Tea home screen, view their pages, and edit form fields in a preview.
+Generation uses AI; preview uses ordinary Go code and does not call an AI API.
 
-## Project status
+Preview validates tool references but does not execute tools. Form edits stay in
+memory and are discarded when you leave the app. Tool execution, permissions,
+workflows, and sharing are future milestones.
 
-The repository is at the architecture-review stage. Phase 1 production code has
-not been implemented, dependencies have not been installed, and no Go module has
-been initialized. The existing empty `main.go` is preserved pending the agreed
-entry-point layout.
+## Build
 
-## Intended experience
-
-These commands describe the product vision and are **not available yet**:
+Use Go 1.25.5 or later:
 
 ```sh
-tuilor connect github
-tuilor connect linear
-tuilor create
-tuilor save dev-dashboard
-tuilor run dev-dashboard
-tuilor edit dev-dashboard
+go build -o bin/tuilor ./cmd/tuilor
+go build -o bin/testserver ./cmd/testserver
 ```
 
-A user could request a dashboard for GitHub pull requests and Linear issues,
-customize the generated application, and reopen it later. Eventually, compatible
-applications should be portable and shareable.
+## Generate an app
 
-## Principles and stack
+Set `OPENAI_API_KEY` in the terminal where you run Tuilor. For zsh, enter it at a
+hidden prompt:
 
-- Build persistent, customizable applications from declarative definitions.
-- Start with local filesystem storage and explicit permissions for tool execution.
-- Keep generation separate from execution; do not generate arbitrary executable code.
-- Use Go and the official `github.com/modelcontextprotocol/go-sdk` for MCP.
-- Introduce Bubble Tea, Bubbles, and Lip Gloss when the dynamic TUI milestone begins.
-- Add provider-agnostic LLM integration when application generation begins.
-- Add infrastructure and abstractions only when requirements justify them.
+```zsh
+read -rs "OPENAI_API_KEY?OpenAI API key: "
+export OPENAI_API_KEY
+echo
+```
 
-## Roadmap
+Then generate an app (this makes a billable OpenAI request):
 
-| Phase | Deliverable |
+```sh
+./bin/tuilor create "Build a greeting application" --server ./bin/testserver
+```
+
+Tuilor prints the path of a new private JSON file in `apps/`. Use `--output-dir`
+for another directory and `--timeout` to change the default 90-second deadline.
+`TUILOR_MODEL` overrides the default `gpt-4.1-mini` model. The implementation uses
+the official OpenAI Go SDK, Responses API, and strict Structured Outputs, followed
+by local format and capability validation.
+
+The initial format supports pages, text, forms, text inputs, and actions bound to
+discovered MCP tools with direct top-level string parameters. See
+[the example definition](examples/greeting.json).
+
+## Preview through My Apps
+
+```sh
+./bin/tuilor --server ./bin/testserver
+```
+
+Choose **My Apps**, select a JSON filename, and press Enter. Tuilor discovers the
+chosen server's tools, closes the connection, validates the saved definition,
+and displays its preview. No API key is needed. To use another app directory:
+
+```sh
+./bin/tuilor --apps-dir ./my-apps --server ./bin/testserver
+```
+
+To try preview without generating an app first:
+
+```sh
+mkdir -p apps
+cp examples/greeting.json apps/greeting.json
+./bin/tuilor --server ./bin/testserver
+```
+
+| Key | Behavior |
 | --- | --- |
-| 1 | Connect to one trusted local MCP server over stdio and display its tools |
-| 2 | Normalize tools into a registry with explicit schema and freshness rules |
-| 3 | Generate and validate declarative application definitions with AI |
-| 4 | Render definitions dynamically with Bubble Tea |
-| 5 | Save, reopen, edit, and version applications on the local filesystem |
-| 6 | Add multi-server workflows and permission enforcement |
-| 7 | Explore sharing and distribution after the local product is reliable |
+| Up / Down, Enter | Choose a menu item or saved app |
+| Tab / Shift+Tab | Focus the next / previous form field |
+| Ctrl+N / Ctrl+P | Switch pages, preserving edits |
+| Page Up / Page Down | Scroll the current page |
+| Esc | Cancel validation or return to the preceding screen |
+| Ctrl+C | Exit from any screen |
+| q | Exit from menus; type `q` normally in form fields |
 
-The first milestone includes timeouts, cancellation, connection errors, clean
-session/subprocess shutdown, and a minimal test MCP server. Tool execution, AI,
-persistence, remote transports, and a full TUI are outside that milestone.
+App lists include regular `.json` files directly inside the selected directory,
+sorted by filename. Missing directories appear as empty libraries. Invalid apps
+and connection failures appear as errors in the app list. Discovery has a
+10-second deadline; subprocess cleanup may take additional time.
 
-## Architecture and learning workflow
+Only launch explicitly trusted local executables. Servers run with your OS
+privileges, even during discovery. Generated definitions contain no launch
+commands or execution permissions. Untrusted metadata is escaped for display.
 
-Read [the evolving architecture and Phase 1 proposal](docs/architecture.md) and
-[ADR 0001: local-first modular Go application](docs/adr/0001-initial-architecture.md).
-[AGENTS.md](AGENTS.md) captures repository conventions.
+## Other commands and development
 
-For each milestone: identify requirements, compare designs and tradeoffs, agree
-on meaningful architectural choices, implement the smallest useful version,
-test behavior and failures, and review what we learned. Architecture explanations
-are part of the work: this project is also a way to learn Go and system design.
+```sh
+./bin/tuilor tools ./bin/testserver
+./bin/tuilor version
+go fmt ./...
+go build ./...
+go vet ./...
+```
 
-The repository-local
-[system-design-mentor skill](.agents/skills/system-design-mentor/SKILL.md) supports
-design reviews. Invoke it as `$system-design-mentor` for requirements, boundaries,
-alternatives, failure analysis, and a practical implementation proposal.
+There are currently no automated test files, by project choice. Preview was
+checked through terminal sessions, including editing, navigation, resize, invalid
+files, server errors, cancellation, timeout, and direct-child cleanup. No preview
+verification requires an OpenAI request.
+
+See [the architecture](docs/architecture.md), [ADRs](docs/adr/), and
+[repository instructions](AGENTS.md). The next milestone is explicit permission
+and execution design before enabling form actions.

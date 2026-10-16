@@ -15,7 +15,6 @@ import (
 
 const DefaultModel = "gpt-4.1-mini"
 
-// OpenAI owns only API communication; it knows nothing about MCP sessions or app semantics.
 type OpenAI struct {
 	client openai.Client
 	model  string
