@@ -14,9 +14,9 @@ import (
 
 func NewRootCommand() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "tuilor",
-		Short: "Build terminal applications with AI and MCP",
-		SilenceUsage: true,
+		Use:           "tuilor",
+		Short:         "Build terminal applications with AI and MCP",
+		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			_, err := tea.NewProgram(tui.NewModel()).Run()
@@ -48,11 +48,16 @@ func NewRootCommand() *cobra.Command {
 				return err
 			}
 
-			fmt.Fprintln(cmd.OutOrStdout(), "Available MCP Tools:")
+			if _, err := fmt.Fprintln(cmd.OutOrStdout(), "Available MCP Tools:"); err != nil {
+				return err
+			}
 
 			for _, tool := range tools {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n",
-					tool.Name, tool.Description)
+				if _, err := fmt.Fprintf(cmd.OutOrStdout(), "%s: %s\n%s\n",
+					EscapeTerminalControls(tool.Name), EscapeTerminalControls(tool.Description),
+					EscapeTerminalControls(string(tool.InputSchema))); err != nil {
+					return err
+				}
 			}
 
 			return nil
@@ -60,6 +65,7 @@ func NewRootCommand() *cobra.Command {
 	}
 
 	root.AddCommand(toolsCmd)
+	root.AddCommand(newCreateCommand())
 
 	return root
 
