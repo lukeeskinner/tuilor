@@ -5,9 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"os/exec"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Tool struct {
@@ -16,7 +17,7 @@ type Tool struct {
 	InputSchema json.RawMessage
 }
 
-func ListTools(ctx context.Context, executable string) (tools []Tool, err error) {
+func connect(ctx context.Context, executable string) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(
 		&mcp.Implementation{
 			Name:    "tuilor",
@@ -37,13 +38,25 @@ func ListTools(ctx context.Context, executable string) (tools []Tool, err error)
 		}
 		return nil, fmt.Errorf("connect to MCP server: %w", err)
 	}
+	return session, nil
+}
+
+func ListTools(ctx context.Context, executable string) (tools []Tool, err error) {
+	session, err := connect(ctx, executable)
+	if err != nil {
+		return nil, err
+	}
 	defer func() {
 		if closeErr := session.Close(); closeErr != nil {
 			err = errors.Join(err, fmt.Errorf("close MCP session: %w", closeErr))
 			tools = nil
 		}
 	}()
+	return listTools(ctx, session)
+}
 
+func listTools(ctx context.Context, session *mcp.ClientSession) ([]Tool, error) {
+	var tools []Tool
 	for tool, err := range session.Tools(ctx, nil) {
 		if err != nil {
 			if ctx.Err() != nil {

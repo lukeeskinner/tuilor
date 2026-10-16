@@ -4,12 +4,14 @@
 
 Tuilor generates declarative JSON apps from natural-language requests and tools
 discovered from a trusted local MCP server. You can open saved apps through the
-Bubble Tea home screen, view their pages, and edit form fields in a preview.
-Generation uses AI; preview uses ordinary Go code and does not call an AI API.
+Bubble Tea home screen, view their pages, edit fields, and submit forms to MCP
+tools. Generation uses AI; routine app interactions use ordinary Go code and
+do not call an AI API.
 
-Preview validates tool references but does not execute tools. Form edits stay in
-memory and are discarded when you leave the app. Tool execution, permissions,
-workflows, and sharing are future milestones.
+Every tool call requires confirmation of the server, tool name, and exact
+arguments. Each approved submission opens a fresh connection, rechecks the tool
+and argument values, calls once, and closes. Form edits and results stay in memory
+and are discarded when you leave the app. Workflows and sharing are deferred.
 
 ## Build
 
@@ -47,7 +49,7 @@ The initial format supports pages, text, forms, text inputs, and actions bound t
 discovered MCP tools with direct top-level string parameters. See
 [the example definition](examples/greeting.json).
 
-## Preview through My Apps
+## Run an app through My Apps
 
 ```sh
 ./bin/tuilor --server ./bin/testserver
@@ -55,13 +57,13 @@ discovered MCP tools with direct top-level string parameters. See
 
 Choose **My Apps**, select a JSON filename, and press Enter. Tuilor discovers the
 chosen server's tools, closes the connection, validates the saved definition,
-and displays its preview. No API key is needed. To use another app directory:
+and displays its pages and forms. No API key is needed. To use another app directory:
 
 ```sh
 ./bin/tuilor --apps-dir ./my-apps --server ./bin/testserver
 ```
 
-To try preview without generating an app first:
+To try an app without generating one first:
 
 ```sh
 mkdir -p apps
@@ -69,20 +71,37 @@ cp examples/greeting.json apps/greeting.json
 ./bin/tuilor --server ./bin/testserver
 ```
 
+Open the greeting app, type your name, and press Enter. Review the confirmation
+and press `y` to run that exact call once, or Esc to decline. A successful call
+displays a result such as `{"message":"Hello, Luke"}` beneath the form. Pressing
+Enter on the confirmation screen does not authorize execution.
+
 | Key | Behavior |
 | --- | --- |
 | Up / Down, Enter | Choose a menu item or saved app |
-| Tab / Shift+Tab | Focus the next / previous form field |
+| Tab / Shift+Tab | Focus the next / previous field or Submit button |
+| Enter inside an app | Review the focused form's tool call |
+| y on confirmation | Authorize the displayed call once |
 | Ctrl+N / Ctrl+P | Switch pages, preserving edits |
 | Page Up / Page Down | Scroll the current page |
-| Esc | Cancel validation or return to the preceding screen |
+| Esc | Decline confirmation, cancel a running request, or return to the preceding screen |
 | Ctrl+C | Exit from any screen |
 | q | Exit from menus; type `q` normally in form fields |
 
 App lists include regular `.json` files directly inside the selected directory,
 sorted by filename. Missing directories appear as empty libraries. Invalid apps
-and connection failures appear as errors in the app list. Discovery has a
-10-second deadline; subprocess cleanup may take additional time.
+and connection failures appear as errors in the app list. Discovery and each
+complete submission have 10-second deadlines; subprocess cleanup may take
+additional time. After sending a call, cancellation or timeout cannot establish
+whether the tool already performed its effects. Tuilor reports that uncertainty
+and never retries automatically.
+
+The app validates string constraints such as length, pattern, and enum before
+confirmation and against the server's current schema before execution. Calls are
+serialized. Text and structured JSON results are displayed with terminal controls
+escaped; non-text content is summarized without fetching resources. Displayed
+output is limited to 64 KiB. Fresh connections do not retain server-side session
+state between submissions.
 
 Only launch explicitly trusted local executables. Servers run with your OS
 privileges, even during discovery. Generated definitions contain no launch
@@ -98,11 +117,11 @@ go build ./...
 go vet ./...
 ```
 
-There are currently no automated test files, by project choice. Preview was
-checked through terminal sessions, including editing, navigation, resize, invalid
-files, server errors, cancellation, timeout, and direct-child cleanup. No preview
-verification requires an OpenAI request.
+There are currently no automated test files, by project choice. Terminal and
+temporary protocol-fixture checks cover navigation, validation, per-call
+confirmation, exact argument binding, server errors, cancellation, timeout, and
+direct-child cleanup. Runtime verification requires no OpenAI request.
 
 See [the architecture](docs/architecture.md), [ADRs](docs/adr/), and
-[repository instructions](AGENTS.md). The next milestone is explicit permission
-and execution design before enabling form actions.
+[repository instructions](AGENTS.md). [ADR 0003](docs/adr/0003-form-execution.md)
+records the permission and connection-lifetime choices for form execution.

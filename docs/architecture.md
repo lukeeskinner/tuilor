@@ -1,8 +1,9 @@
 # Tuilor architecture
 
-Status: implemented generation and interactive preview, 2026-10-15.
+Status: implemented generation, interactive rendering, and authorized form execution, 2026-10-15.
 [ADR 0001](adr/0001-initial-architecture.md) records the local-first modular Go
-direction. [ADR 0002](adr/0002-app-preview.md) records the agreed preview design.
+direction. [ADR 0002](adr/0002-app-preview.md) records the preview design;
+[ADR 0003](adr/0003-form-execution.md) extends it with form execution.
 
 ## Boundaries and data flow
 
@@ -15,14 +16,18 @@ preview interactions require no LLM.
 Generation:
 request + discovered MCP schemas -> OpenAI -> candidate JSON -> app.Parse -> file
 
-Preview:
+Open an app:
 home -> My Apps -> read JSON -> discover tools -> app.Parse -> Bubble Tea preview
+
+Submit:
+bound values -> validate -> confirm exact call -> fresh connection -> rediscover
+-> validate current arguments -> tools/call once -> close -> display result
 ```
 
 | Package | Responsibility |
 | --- | --- |
 | `internal/cli` | Parse commands and flags; configure and run the TUI |
-| `internal/mcpclient` | Own one stdio connection, discover tools, close and reap the direct child |
+| `internal/mcpclient` | Own one stdio connection, discover tools, validate argument values, call once when authorized, close and reap the direct child |
 | `internal/app` | Define JSON, validate structure and capability bindings, save new files |
 | `internal/generator` | Construct AI input and isolate the OpenAI Responses implementation |
 | `internal/tui` | Own menus, loading state, preview inputs, focus, pages, and viewport |
@@ -55,7 +60,7 @@ Root flags `--apps-dir` (default `apps`) and `--server` configure the home scree
 My Apps lists regular top-level JSON files in filename order. No server starts
 until a file is selected. Preview does not require an API key.
 
-The parent TUI model owns one validation request at a time. A Bubble Tea command
+The parent TUI model owns one MCP operation at a time. A Bubble Tea command
 reads the selected file, discovers tools under a 10-second context, and calls the
 existing full validator. Discovery closes its MCP connection before returning.
 No server session remains open during preview.
@@ -69,10 +74,36 @@ cleanup wait. The SDK owns process reaping; Tuilor never calls Wait itself.
 Contexts belong to individual operations and are not stored in model structs.
 
 The concrete preview model owns text inputs separately from the definition.
-Inputs are scoped by page and form position, retain values across page switches,
-and reset on leaving an app. Bubbles textinput handles editing; Bubbles viewport
+Inputs and results are scoped by page and form position, retain values across
+page switches, and reset on leaving an app. Bubbles textinput handles editing; Bubbles viewport
 handles scrolling. Resizing adjusts wrapping and field widths, and focus changes
-scroll the active field into view. Very small terminals show a resize prompt.
+scroll the active field or Submit button into view. Very small terminals show a resize prompt.
+
+## Form execution and permission boundary
+
+Enter on a field or Submit button constructs an immutable argument snapshot for
+that form. The current discovery snapshot validates those values first. The TUI
+then shows a scrollable confirmation containing the selected executable, exact
+tool name, and JSON arguments. Only a literal `y` on that screen authorizes one
+call. Enter does not approve; Esc declines. Inputs cannot change during review.
+No permission is persisted or granted by the app definition or tool annotations.
+
+After approval, a new 10-second operation connects to the explicitly chosen
+server, rediscovers the tool, and validates the approved argument snapshot against
+its current schema on that same session. Unknown parameters, missing tools,
+required arguments, and string constraints can block the call. Schema resolution
+has no remote loader. No default arguments are inserted. The MCP client sends
+one tools/call request and closes its session; it does not reconnect or retry.
+This supports one-shot tools rather than persistent server-side session state.
+
+The UI blocks concurrent submissions. Esc during execution requests cancellation
+and waits for cleanup; Ctrl+C also waits before quitting. Errors after dispatch
+report that effects may already have occurred. A successful result is retained
+even if subsequent session cleanup reports an error. Text or structured JSON is
+displayed under the originating form. Tool-reported errors are labeled separately
+from protocol failures. Non-text content is summarized, with no resource fetching,
+and displayed output is capped at 64 KiB. Additional tool interaction is unsupported
+and never triggers an automatic retry. The runtime has no AI dependency.
 
 ## Trust boundaries and current limits
 
@@ -80,10 +111,10 @@ scroll the active field into view. Very small terminals show a resize prompt.
   directly, with no shell interpolation. Discovery is not an OS sandbox.
 - File contents and MCP metadata are untrusted. Saved apps pass structural and
   capability validation before rendering; displayed control characters are escaped.
-- Generation and preview never call MCP tools. Preview labels actions as disabled.
-  Executing a form will require explicit permissions and input-value validation.
-- Capability discovery is a snapshot. Preview validates bindings, not whether
-  future typed input satisfies constraints such as pattern or enum.
+- Generation and opening an app never call MCP tools. Runtime execution requires
+  the user's confirmation of each exact tool and argument snapshot.
+- Discovery is a snapshot. Submissions rediscover capabilities and validate actual
+  values, but cannot prevent the trusted server changing behavior after validation.
 - Edited values are not persisted. There is no app editor, schema migration,
   marketplace, workflow engine, or multi-server runtime.
 - Cleanup covers directly launched child processes; arbitrary descendant process
@@ -95,9 +126,12 @@ No automated test files are retained, following the user's explicit preference.
 Build and vet checks accompany manual terminal verification: saved greeting,
 multiple pages and forms, focus, scrolling, resize, edit reset, malformed JSON,
 unsupported definitions, missing configuration, startup failure, empty libraries,
-cancellation, deadline handling, and direct-child cleanup. A temporary protocol
-fixture verifies discovery-only messages without API credentials or tool calls.
+cancellation, deadline handling, and direct-child cleanup. Execution checks use a
+temporary local protocol fixture to inspect exact calls and arguments: declining
+permission, duplicate key presses, fresh approval and connection per call, invalid
+values, changed schemas, missing tools, tool/protocol errors, zero-input forms,
+structured results, escaped controls, cancellation, timeout, and quitting during
+a call. No check needs an OpenAI key or writes edited values to saved apps.
 
-Before enabling actions, agree permission behavior, session ownership, per-call
-cancellation, result display, and the treatment of uncertain outcomes after a
-side-effecting request times out. Record those decisions before implementation.
+Future extensions such as persistent sessions, session-wide grants, retries,
+workflows, and non-text rendering require separate design decisions.

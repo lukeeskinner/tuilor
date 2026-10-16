@@ -22,6 +22,9 @@ type Model struct {
 	files             []string
 	err               error
 	preview           previewModel
+	tools             []mcpclient.Tool
+	confirmation      *confirmationModel
+	call              *invocation
 	width, height     int
 	cancel            context.CancelFunc
 	done              chan struct{}
@@ -31,6 +34,7 @@ type Model struct {
 type loadedAppMsg struct {
 	definition *app.Definition
 	err        error
+	tools      []mcpclient.Tool
 }
 
 func NewModel(appsDir, server string) Model {
@@ -54,7 +58,7 @@ func (m Model) Close() error {
 	case <-m.done:
 		return nil
 	case <-time.After(5 * time.Second):
-		return fmt.Errorf("MCP validation did not finish cleanup within 5 seconds")
+		return fmt.Errorf("MCP operation did not finish cleanup within 5 seconds")
 	}
 }
 
@@ -62,6 +66,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
+		if m.confirmation != nil {
+			m.confirmation.resize(m.width, m.height)
+		}
+		if m.preview.definition != nil {
+			var cmd tea.Cmd
+			m.preview, cmd = m.preview.Update(msg)
+			return m, cmd
+		}
+	case calledToolMsg:
+		m.loading, m.cancel, m.done = false, nil, nil
+		if m.quitting {
+			return m, tea.Quit
+		}
+		text := "Result: " + msg.result.Text
+		if msg.result.IsError {
+			text = "Tool error: " + msg.result.Text
+		}
+		if msg.err != nil {
+			if msg.result.Text == "" {
+				text = ""
+			}
+			text += "\nError: " + msg.err.Error()
+		}
+		m.preview.showResult(*m.call, strings.TrimSpace(text))
+		m.call, m.screen = nil, "preview"
+		return m, m.preview.focusInput()
 	case loadedAppMsg:
 		m.loading, m.cancel, m.done = false, nil, nil
 		if m.quitting {
@@ -72,6 +102,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} // Esc already left this request.
 		m.err, m.screen = msg.err, "apps"
 		if msg.err == nil {
+			m.tools = msg.tools
 			m.screen = "preview"
 			var cmd tea.Cmd
 			m.preview, cmd = newPreview(msg.definition, m.width, m.height)
@@ -79,7 +110,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.screen != "preview") {
+		if key == "ctrl+c" || (key == "q" && m.preview.definition == nil) {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -93,17 +124,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
+			case "confirm":
+				m.confirmation, m.screen = nil, "preview"
+				return m, m.preview.focusInput()
+			case "calling", "canceling":
+				m.cancel()
+				m.screen = "canceling"
 			case "loading":
 				m.cancel()
 				m.screen = "apps"
 			case "preview":
 				m.preview, m.screen = previewModel{}, "apps"
+				m.tools = nil
 			default:
 				m.screen = "home"
 			}
 			return m, nil
 		}
 		switch m.screen {
+		case "preview":
+			if key == "enter" {
+				return m.requestSubmission()
+			}
+		case "confirm":
+			if key == "y" && m.width >= 30 && m.height >= 6 {
+				return m.startCall()
+			}
+			if key == "pgup" || key == "pgdown" {
+				m.confirmation.view, _ = m.confirmation.view.Update(msg)
+			}
 		case "home":
 			switch key {
 			case "up":
@@ -186,7 +235,7 @@ func loadApp(ctx context.Context, path, server string) loadedAppMsg {
 	if err == nil {
 		err = ctx.Err()
 	}
-	return loadedAppMsg{definition: definition, err: err}
+	return loadedAppMsg{definition: definition, err: err, tools: tools}
 }
 
 func (m Model) View() string {
@@ -212,6 +261,12 @@ func (m Model) View() string {
 		return "Validating app against MCP tools…\n\nEsc Cancel • Ctrl+C Quit\n"
 	case "preview":
 		return m.preview.View()
+	case "confirm":
+		return m.confirmation.View()
+	case "calling":
+		return "Running MCP tool…\n\nEsc Cancel call • Ctrl+C Quit\n"
+	case "canceling":
+		return "Canceling MCP call and closing connection…\n\nThe tool may already have run.\n"
 	default:
 		return "◆ TUILOR\n\n" + m.screen + "\n\nComing soon...\n\nEsc Back • q Quit\n"
 	}

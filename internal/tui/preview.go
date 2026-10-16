@@ -12,29 +12,41 @@ import (
 )
 
 // previewModel owns editable state separately from the saved definition.
-// Only the parent model performs discovery; this model has no MCP or AI client.
+// Only the parent model performs MCP operations; this model has no MCP or AI client.
 type previewModel struct {
 	definition    *app.Definition
 	page          int
 	inputs        [][]textinput.Model
 	focus         []int
+	targets       [][]focusTarget
+	results       map[[2]int]string
+	resultLine    int
 	viewport      viewport.Model
 	width, height int
 }
+
+// A submit button has input == -1. This also makes zero-input forms accessible.
+type focusTarget struct{ form, input int }
 
 func newPreview(definition *app.Definition, width, height int) (previewModel, tea.Cmd) {
 	p := previewModel{
 		definition: definition,
 		inputs:     make([][]textinput.Model, len(definition.Pages)),
 		focus:      make([]int, len(definition.Pages)),
+		targets:    make([][]focusTarget, len(definition.Pages)),
+		results:    make(map[[2]int]string),
 		viewport:   viewport.New(1, 1),
 	}
 	for page, content := range definition.Pages {
-		for _, component := range content.Components {
+		for form, component := range content.Components {
 			for range component.Fields {
 				input := textinput.New()
 				input.Prompt = "> "
+				p.targets[page] = append(p.targets[page], focusTarget{form, len(p.inputs[page])})
 				p.inputs[page] = append(p.inputs[page], input)
+			}
+			if component.Type == "form" {
+				p.targets[page] = append(p.targets[page], focusTarget{form, -1})
 			}
 		}
 	}
@@ -55,10 +67,24 @@ func (p *previewModel) resize(width, height int) {
 }
 
 func (p *previewModel) focusInput() tea.Cmd {
-	if len(p.inputs[p.page]) == 0 {
+	target, ok := p.activeTarget()
+	if !ok || target.input < 0 {
 		return nil
 	}
-	return p.inputs[p.page][p.focus[p.page]].Focus()
+	return p.inputs[p.page][target.input].Focus()
+}
+
+func (p previewModel) activeTarget() (focusTarget, bool) {
+	if len(p.targets[p.page]) == 0 {
+		return focusTarget{}, false
+	}
+	return p.targets[p.page][p.focus[p.page]], true
+}
+
+func (p *previewModel) blurInput() {
+	if target, ok := p.activeTarget(); ok && target.input >= 0 {
+		p.inputs[p.page][target.input].Blur()
+	}
 }
 
 func (p previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
@@ -71,9 +97,7 @@ func (p previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+n", "ctrl+p":
-			if len(p.inputs[p.page]) > 0 {
-				p.inputs[p.page][p.focus[p.page]].Blur()
-			}
+			p.blurInput()
 			direction := 1
 			if msg.String() == "ctrl+p" {
 				direction = -1
@@ -84,11 +108,11 @@ func (p previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
 			p.renderContent(true)
 			return p, cmd
 		case "tab", "shift+tab":
-			count := len(p.inputs[p.page])
+			count := len(p.targets[p.page])
 			if count == 0 {
 				return p, nil
 			}
-			p.inputs[p.page][p.focus[p.page]].Blur()
+			p.blurInput()
 			direction := 1
 			if msg.String() == "shift+tab" {
 				direction = -1
@@ -105,8 +129,8 @@ func (p previewModel) Update(msg tea.Msg) (previewModel, tea.Cmd) {
 		ensureVisible = true
 	}
 	var cmd tea.Cmd
-	if len(p.inputs[p.page]) > 0 {
-		i := p.focus[p.page]
+	if target, ok := p.activeTarget(); ok && target.input >= 0 {
+		i := target.input
 		p.inputs[p.page][i], cmd = p.inputs[p.page][i].Update(msg)
 	}
 	p.renderContent(ensureVisible)
@@ -120,7 +144,9 @@ func (p *previewModel) renderContent(ensureVisible bool) {
 		lines = append(lines, strings.Split(wrapped, "\n")...)
 	}
 	fieldIndex, focusedLine := 0, -1
-	for _, component := range p.definition.Pages[p.page].Components {
+	target, hasTarget := p.activeTarget()
+	p.resultLine = -1
+	for form, component := range p.definition.Pages[p.page].Components {
 		switch component.Type {
 		case "text":
 			appendText(component.Text)
@@ -128,13 +154,26 @@ func (p *previewModel) renderContent(ensureVisible bool) {
 			appendText(component.Title)
 			for _, field := range component.Fields {
 				appendText(field.Label)
-				if fieldIndex == p.focus[p.page] {
+				if hasTarget && fieldIndex == target.input {
 					focusedLine = len(lines)
 				}
 				lines = append(lines, p.inputs[p.page][fieldIndex].View())
 				fieldIndex++
 			}
-			appendText("Action: " + component.Action.Tool + " (disabled in preview)")
+			button := "  [ Submit: " + component.Action.Tool + " ]"
+			if hasTarget && target.form == form && target.input < 0 {
+				button = "> [ Submit: " + component.Action.Tool + " ]"
+				focusedLine = len(lines)
+			}
+			appendText(button)
+			if result, ok := p.results[[2]int{p.page, form}]; ok {
+				if hasTarget && target.form == form {
+					p.resultLine = len(lines)
+				}
+				for _, line := range strings.Split(result, "\n") {
+					appendText(line)
+				}
+			}
 		}
 		lines = append(lines, "")
 	}
@@ -151,13 +190,13 @@ func (p *previewModel) renderContent(ensureVisible bool) {
 func (p previewModel) View() string {
 	line := lipgloss.NewStyle().MaxWidth(max(1, p.width)).MaxHeight(1)
 	if p.width < 30 || p.height < 6 {
-		return line.Render("Enlarge terminal to preview.")
+		return line.Render("Enlarge terminal to view app.")
 	}
 	header := escapeControls(p.definition.Name) + " — " + escapeControls(p.definition.Pages[p.page].Title)
-	status := fmt.Sprintf("Preview — actions disabled · page %d/%d", p.page+1, len(p.definition.Pages))
+	status := fmt.Sprintf("App · page %d/%d · calls require confirmation", p.page+1, len(p.definition.Pages))
 	return strings.Join([]string{
 		line.Render(header), line.Render(status), p.viewport.View(),
-		line.Render("Tab/Shift+Tab Fields · PgUp/PgDn Scroll"),
+		line.Render("Tab/Shift+Tab Focus · Enter Submit · PgUp/PgDn Scroll"),
 		line.Render("Ctrl+N/P Pages · Esc Back · Ctrl+C Quit"),
 	}, "\n")
 }
