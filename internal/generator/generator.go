@@ -14,5 +14,6 @@ type Request struct {
 	Instructions    string
 	Input           string
 	Schema          map[string]any
+	Research        bool
 	MaxOutputTokens int64
 }

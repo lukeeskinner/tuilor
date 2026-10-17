@@ -1,0 +1,489 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/google/jsonschema-go/jsonschema"
+)
+
+// Host-owned helpers are conventions for trusted Go code, not a sandbox.
+type APIRequest struct {
+	ConnectionID string
+	RequestID    string
+	Method       string
+	Endpoint     string
+	Headers      map[string]string
+	Body         json.RawMessage
+}
+type APIResultMsg struct {
+	RequestID     string
+	Status        int
+	Body          json.RawMessage
+	Link          string
+	RateRemaining string
+	RateReset     string
+	RetryAfter    string
+	Error         string
+}
+type apiConnection struct {
+	ID      string `json:"id"`
+	BaseURL string `json:"base_url"`
+	Auth    string `json:"auth"`
+	Key     string `json:"key"`
+	Secret  string `json:"secret"`
+	Kind    string `json:"kind"`
+}
+type apiPendingMsg struct {
+	Request    APIRequest
+	URL        string
+	Connection apiConnection
+	Error      string
+}
+
+var apiConnections map[string]apiConnection
+var appContext context.Context
+var appCancel context.CancelFunc
+var appSchema *jsonschema.Resolved
+
+func runtimeInit() error {
+	appContext, appCancel = context.WithCancel(context.Background())
+	apiConnections = map[string]apiConnection{}
+	raw := os.Getenv("TUILOR_APP_AUTH")
+	_ = os.Unsetenv("TUILOR_APP_AUTH")
+	if raw != "" {
+		var connections []apiConnection
+		if json.Unmarshal([]byte(raw), &connections) != nil {
+			return fmt.Errorf("invalid launch configuration")
+		}
+		for _, c := range connections {
+			apiConnections[c.ID] = c
+		}
+	}
+	data, err := os.ReadFile("data.schema.json")
+	if err != nil {
+		return fmt.Errorf("read data contract: %w", err)
+	}
+	var schema jsonschema.Schema
+	if json.Unmarshal(data, &schema) != nil {
+		return fmt.Errorf("invalid data contract")
+	}
+	appSchema, err = schema.Resolve(&jsonschema.ResolveOptions{Loader: func(*url.URL) (*jsonschema.Schema, error) {
+		return nil, fmt.Errorf("external data schemas are unsupported")
+	}})
+	return err
+}
+func validateData(data []byte) error {
+	if len(data) > 4*1024*1024 {
+		return fmt.Errorf("local state exceeds 4 MiB; original data preserved")
+	}
+	if appSchema == nil {
+		return fmt.Errorf("data contract is not initialized")
+	}
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return fmt.Errorf("invalid local JSON; original data preserved")
+	}
+	if appSchema.Validate(value) != nil {
+		return fmt.Errorf("local data does not match the app's data contract; original data preserved")
+	}
+	return nil
+}
+func apiText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, s)
+}
+func apiRedact(s string) string {
+	for _, c := range apiConnections {
+		if c.Secret != "" {
+			s = strings.ReplaceAll(s, c.Secret, "[credential]")
+			escaped, _ := json.Marshal(c.Secret)
+			s = strings.ReplaceAll(s, string(escaped[1:len(escaped)-1]), "[credential]")
+			s = strings.ReplaceAll(s, url.QueryEscape(c.Secret), "[credential]")
+		}
+	}
+	return s
+}
+func apiReserved(h string) bool {
+	switch strings.ToLower(h) {
+	case "authorization", "proxy-authorization", "host", "cookie", "connection", "transfer-encoding", "content-length":
+		return true
+	}
+	return false
+}
+
+// apiRequest returns a command; pass its APIResultMsg to your model's Update.
+// GET executes directly. Other methods first return a host-handled confirmation.
+func apiRequest(request APIRequest) tea.Cmd {
+	// Freeze mutable maps and byte slices before any confirmation or HTTP operation.
+	frozen := request
+	frozen.Body = append(json.RawMessage(nil), request.Body...)
+	frozen.Headers = map[string]string{}
+	for k, v := range request.Headers {
+		frozen.Headers[k] = v
+	}
+	return func() tea.Msg {
+		pending := apiPrepare(frozen)
+		if pending.Error != "" {
+			return APIResultMsg{RequestID: frozen.RequestID, Error: pending.Error}
+		}
+		if frozen.Method == "GET" {
+			return apiExecute(appContext, pending)
+		}
+		return pending
+	}
+}
+func apiPrepare(r APIRequest) apiPendingMsg {
+	p := apiPendingMsg{Request: r}
+	if len(r.Endpoint) > 8192 || len(r.RequestID) > 128 || len(r.Headers) > 64 {
+		p.Error = "API request metadata exceeds its limits."
+		return p
+	}
+	c, ok := apiConnections[r.ConnectionID]
+	if !ok {
+		p.Error = "Connection is unavailable; reconnect in Tuilor."
+		return p
+	}
+	p.Connection = c
+	switch r.Method {
+	case "GET", "POST", "PUT", "PATCH", "DELETE":
+	default:
+		p.Error = "Unsupported HTTP method."
+		return p
+	}
+	if len(r.Body) > 256*1024 || (len(r.Body) > 0 && !json.Valid(r.Body)) {
+		p.Error = "Request body must be JSON up to 256 KiB."
+		return p
+	}
+	base, err := url.Parse(c.BaseURL)
+	if err != nil || base.Host == "" {
+		p.Error = "Invalid connection URL."
+		return p
+	}
+	endpoint, err := url.Parse(r.Endpoint)
+	if err != nil || endpoint.IsAbs() || endpoint.Host != "" || endpoint.User != nil || endpoint.Fragment != "" || strings.Contains(r.Endpoint, "\\") {
+		p.Error = "Use a relative endpoint within the connected API."
+		return p
+	}
+	decoded, err := url.PathUnescape(endpoint.EscapedPath())
+	if err != nil || strings.ContainsAny(decoded, "\\\x00\r\n") {
+		p.Error = "Invalid API path."
+		return p
+	}
+	for _, segment := range strings.Split(decoded, "/") {
+		if segment == ".." || segment == "." || strings.Contains(segment, "%") {
+			p.Error = "API path traversal is unsupported."
+			return p
+		}
+	}
+	prefix := strings.TrimRight(base.Path, "/")
+	base.Path = path.Join(prefix, "/"+strings.TrimLeft(decoded, "/"))
+	base.RawPath = ""
+	base.RawQuery = endpoint.RawQuery
+	if prefix != "" && base.Path != prefix && !strings.HasPrefix(base.Path, prefix+"/") {
+		p.Error = "Endpoint escapes the connected API."
+		return p
+	}
+	for k, v := range r.Headers {
+		if len(k)+len(v) > 8192 || apiReserved(k) || strings.EqualFold(k, c.Key) || strings.ContainsAny(k+v, "\r\n") {
+			p.Error = "Reserved or invalid request header."
+			return p
+		}
+	}
+	if c.Auth == "query" && base.Query().Has(c.Key) {
+		p.Error = "Credential query parameters belong to Tuilor."
+		return p
+	}
+	p.URL = base.String()
+	return p
+}
+func apiExecute(parent context.Context, p apiPendingMsg) APIResultMsg {
+	result := APIResultMsg{RequestID: p.Request.RequestID}
+	if parent == nil {
+		result.Error = "Application is shutting down."
+		return result
+	}
+	ctx, cancel := context.WithTimeout(parent, 20*time.Second)
+	defer cancel()
+	endpoint, _ := url.Parse(p.URL)
+	if p.Connection.Auth == "query" {
+		q := endpoint.Query()
+		q.Set(p.Connection.Key, p.Connection.Secret)
+		endpoint.RawQuery = q.Encode()
+	}
+	req, err := http.NewRequestWithContext(ctx, p.Request.Method, endpoint.String(), bytes.NewReader(p.Request.Body))
+	if err != nil {
+		result.Error = "Invalid API request."
+		return result
+	}
+	// Disable net/http replayability for writes, including idempotency-key requests.
+	if p.Request.Method != "GET" {
+		req.GetBody = nil
+		if req.Body == nil || req.Body == http.NoBody {
+			req.Body = io.NopCloser(bytes.NewReader(nil))
+		}
+	}
+	for k, v := range p.Request.Headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("User-Agent", "Tuilor-generated-app")
+	if len(p.Request.Body) > 0 {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	switch p.Connection.Auth {
+	case "bearer", "oauth":
+		req.Header.Set("Authorization", "Bearer "+p.Connection.Secret)
+	case "header":
+		req.Header.Set(p.Connection.Key, p.Connection.Secret)
+	}
+	if p.Connection.Kind == "github" {
+		req.Header.Set("Accept", "application/vnd.github+json")
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		result.Error = "API request failed; check your connection."
+		if ctx.Err() != nil {
+			result.Error = "API request canceled or timed out."
+		}
+		if p.Request.Method != "GET" {
+			result.Error += " The change may have reached the service; refresh before trying again."
+		}
+		return result
+	}
+	defer resp.Body.Close()
+	result.Status = resp.StatusCode
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1024*1024+1))
+	if err != nil || len(body) > 1024*1024 {
+		result.Error = "API response could not be read or exceeded 1 MiB."
+		if p.Request.Method != "GET" {
+			result.Error += " The change may have succeeded; refresh before retrying."
+		}
+		return result
+	}
+	result.Body = json.RawMessage(apiRedact(string(body)))
+	result.Link = apiText(apiRedact(resp.Header.Get("Link")))
+	result.RateRemaining = apiText(resp.Header.Get("X-RateLimit-Remaining"))
+	result.RateReset = apiText(resp.Header.Get("X-RateLimit-Reset"))
+	result.RetryAfter = apiText(resp.Header.Get("Retry-After"))
+	if result.Status < 200 || result.Status >= 300 {
+		result.Error = fmt.Sprintf("API returned HTTP %d.", result.Status)
+		if result.Status == 401 {
+			result.Error += " Reconnect in Tuilor."
+		}
+		if result.Status == 403 {
+			result.Error += " Check account permissions or rate limits."
+		}
+		if result.Status == 429 {
+			result.Error += " Rate limited; wait before trying again."
+		}
+	}
+	return result
+}
+func apiExecuteCmd(p apiPendingMsg) tea.Cmd {
+	return func() tea.Msg { return apiExecute(appContext, p) }
+}
+func apiConfirmation(p apiPendingMsg, width, height, scroll int) string {
+	if width < 28 || height < 10 {
+		return "Enlarge terminal to review request.\nEsc Cancel · Ctrl+C Return"
+	}
+	body := "(no body)"
+	if len(p.Request.Body) > 0 {
+		var pretty bytes.Buffer
+		if json.Indent(&pretty, p.Request.Body, "", "  ") == nil {
+			body = pretty.String()
+		}
+	}
+	text := "Allow this one API request?\n\n" + p.Request.Method + " " + apiText(apiRedact(p.URL)) + "\n"
+	for k, v := range p.Request.Headers {
+		text += apiText(k) + ": " + apiText(apiRedact(v)) + "\n"
+	}
+	text += "\n" + apiTextLines(apiRedact(body))
+	// Wrap long lines so the entire request can be inspected before approval.
+	wrapped := lipgloss.NewStyle().Width(max(1, width-2)).Render(text)
+	lines := strings.Split(wrapped, "\n")
+	start := min(max(0, scroll), max(0, len(lines)-max(1, height-3)))
+	return strings.Join(lines[start:min(len(lines), start+max(1, height-3))], "\n") + "\n\n" + lipgloss.NewStyle().MaxWidth(width).MaxHeight(1).Render("Enter Approve · Esc Cancel · ↑↓ / PgUp/PgDn Scroll")
+}
+func apiTextLines(s string) string {
+	return strings.Join(func() []string {
+		lines := strings.Split(s, "\n")
+		for i := range lines {
+			lines[i] = apiText(lines[i])
+		}
+		return lines
+	}(), "\n")
+}
+
+// Startup, storage, and terminal ownership stay in the host template. Legacy
+// projects keep their original starter; new projects compile these helpers.
+var dataBroken bool
+
+func loadData(value any) error {
+	data, err := os.ReadFile(filepath.Join("data", "state.json"))
+	if err == nil {
+		err = validateData(data)
+	}
+	if err == nil {
+		err = json.Unmarshal(data, value)
+	}
+	if err != nil {
+		dataBroken = true
+		return fmt.Errorf("load app data (preserved): %w", err)
+	}
+	return nil
+}
+func saveData(value any) error {
+	if dataBroken {
+		return fmt.Errorf("data is invalid; original file has been preserved")
+	}
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err = validateData(data); err != nil {
+		return err
+	}
+	if err = os.MkdirAll("data", 0700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp("data", ".write-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	defer file.Close()
+	if _, err = file.Write(append(data, '\n')); err != nil {
+		return err
+	}
+	if err = file.Sync(); err != nil {
+		return err
+	}
+	if err = file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), filepath.Join("data", "state.json"))
+}
+
+type frame struct {
+	child         tea.Model
+	width, height int
+	pending       *apiPendingMsg
+	scroll        int
+}
+
+func (m frame) Init() tea.Cmd { return m.child.Init() }
+func (m frame) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if p, ok := msg.(apiPendingMsg); ok {
+		if m.pending != nil {
+			return m, func() tea.Msg {
+				return APIResultMsg{RequestID: p.Request.RequestID, Error: "Another confirmation is pending."}
+			}
+		}
+		m.pending = &p
+		m.scroll = 0
+		return m, nil
+	}
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if m.pending != nil {
+			switch key.String() {
+			case "enter":
+				if m.width < 28 || m.height < 10 {
+					return m, nil
+				}
+				p := *m.pending
+				m.pending = nil
+				return m, apiExecuteCmd(p)
+			case "esc":
+				id := m.pending.Request.RequestID
+				m.pending = nil
+				return m, func() tea.Msg { return APIResultMsg{RequestID: id, Error: "Request canceled; nothing was sent."} }
+			case "up":
+				m.scroll = max(0, m.scroll-1)
+			case "down":
+				m.scroll++
+			case "pgup":
+				m.scroll = max(0, m.scroll-max(1, m.height-4))
+			case "pgdown":
+				m.scroll += max(1, m.height-4)
+			case "ctrl+c":
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if key.String() == "esc" || key.String() == "ctrl+c" {
+			return m, tea.Quit
+		}
+	}
+	if size, ok := msg.(tea.WindowSizeMsg); ok {
+		m.width, m.height = max(1, size.Width), max(1, size.Height)
+		msg = tea.WindowSizeMsg{Width: m.width, Height: max(1, m.height-1)}
+	}
+	child, cmd := m.child.Update(msg)
+	if child != nil {
+		m.child = child
+	}
+	return m, cmd
+}
+func (m frame) View() string {
+	if m.pending != nil {
+		return apiConfirmation(*m.pending, m.width, m.height, m.scroll)
+	}
+	if m.width <= 20 || m.height <= 6 {
+		return lipgloss.NewStyle().MaxWidth(max(1, m.width)).MaxHeight(max(1, m.height)).Render("Enlarge terminal. Esc returns.")
+	}
+	body := lipgloss.NewStyle().Width(m.width).Height(m.height - 1).MaxWidth(m.width).MaxHeight(m.height - 1).Render(m.child.View())
+	return body + "\n" + lipgloss.NewStyle().MaxWidth(m.width).Render("Esc / Ctrl+C Return to Tuilor")
+}
+func run() error {
+	err := runtimeInit()
+	if appCancel != nil {
+		defer appCancel()
+	}
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(filepath.Join("data", "state.json"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read data (preserved): %w", err)
+	}
+	if err != nil {
+		return fmt.Errorf("app data is missing; restore it before opening")
+	}
+	if err = validateData(data); err != nil {
+		return err
+	}
+	model, err := newModel()
+	if err != nil {
+		return err
+	}
+	if model == nil {
+		return fmt.Errorf("newModel returned no model")
+	}
+	_, err = tea.NewProgram(frame{child: model, width: 80, height: 24}, tea.WithAltScreen()).Run()
+	return err
+}
+func hostMain() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, apiText(apiRedact(err.Error())))
+		os.Exit(1)
+	}
+}

@@ -13,9 +13,8 @@ MCP discovery and optional settings. Go projects are the default. Keep existing
 saved declarative bundles readable through their current validation/storage/runtime
 path, without migrating or deleting user data. Their retired AI generator and
 unsaved-app creation/publication flow have been removed; do not restore them.
-Do not expand their component framework to implement new-app requests. MCP and
-native app integrations remain future milestones; do not silently install servers
-or wire execution.
+Do not expand their component framework to implement new-app requests. Native GitHub/custom REST connections and schema-preserving app revisions are accepted
+in ADR 0012. MCP execution remains deferred; do not silently install servers or wire tools.
 
 Source apps run with the user's OS privileges and are not sandboxed. Display that
 boundary before generation; Generate authorizes compilation and automatic launch
@@ -92,3 +91,21 @@ data and pending input on failures, persist before changing display state, and h
 the existing single-writer lock. Their definitions cannot grant extra capabilities,
 choose paths, embed credentials, or execute code. Preserve exact-record deletion
 confirmation. These bounds do not sandbox generated Go programs.
+
+## Connected apps and revisions
+
+The service picker offers GitHub and Custom API; add other branded presets only
+with working setup. Default to text badges; Nerd Font icons are opt-in. Keep API
+configuration and keyring secrets separate from MCP settings and app projects.
+Only user-approved bindings receive runtime credentials; never send them to the
+model/compiler or persist them in source. Use the host request helper and confirm
+every non-GET request without automatic write retries. Trusted Go can bypass this
+convention: do not describe it as a sandbox or enforcement against arbitrary code.
+
+New app data contracts are JSON Schemas, not UI definitions. Revisions keep the
+canonical schema unchanged, trial copied data, and publish an active pointer only
+after complete staging under the single-writer lock. Refuse stale trials and
+preserve corrupt data. Rollback carries forward current compatible data and never
+claims to undo external side effects. Existing unschematized projects still run;
+do not silently migrate them. No paid requests, account authorization or real
+external writes during routine verification; use temporary fixtures.

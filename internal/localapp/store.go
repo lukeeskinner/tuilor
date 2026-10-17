@@ -17,6 +17,7 @@ import (
 
 	"github.com/lukeeskinner/tuilor/internal/app"
 	"github.com/lukeeskinner/tuilor/internal/capability"
+	"github.com/lukeeskinner/tuilor/internal/filelock"
 )
 
 type Manifest struct {
@@ -125,7 +126,7 @@ func acquire(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open app lock: %w", err)
 	}
-	if err := lockFile(f); err != nil {
+	if err := filelock.Lock(f); err != nil {
 		f.Close()
 		return nil, fmt.Errorf("app is already open or cannot be locked: %w", err)
 	}
@@ -135,7 +136,7 @@ func release(f *os.File) error {
 	if f == nil {
 		return nil
 	}
-	return errors.Join(unlockFile(f), f.Close())
+	return errors.Join(filelock.Unlock(f), f.Close())
 }
 func Open(ctx context.Context, b Bundle) (*Store, error) {
 	if err := ctx.Err(); err != nil {

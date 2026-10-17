@@ -3,6 +3,7 @@ package codeapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -17,6 +18,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/lukeeskinner/tuilor/internal/integrations"
 )
 
 type Dependency struct {
@@ -28,6 +31,7 @@ var uiDependencies = []Dependency{
 	{"github.com/charmbracelet/bubbletea", "v1.3.10"},
 	{"github.com/charmbracelet/bubbles", "v1.0.0"},
 	{"github.com/charmbracelet/lipgloss", "v1.1.0"},
+	{"github.com/google/jsonschema-go", "v0.4.3"},
 }
 
 type Toolchain struct {
@@ -190,6 +194,16 @@ func validateSource(source string, deps []Dependency, tool Toolchain) error {
 }
 
 func (p *Project) Build(ctx context.Context, tool Toolchain) error {
+	if !p.Draft {
+		release, err := p.Acquire()
+		if err != nil {
+			return err
+		}
+		defer release()
+		if err = p.checkActive(ctx); err != nil {
+			return err
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -223,7 +237,11 @@ func (p *Project) Build(ctx context.Context, tool Toolchain) error {
 	temporary := file.Name()
 	file.Close()
 	defer os.Remove(temporary)
-	if out, err := command(ctx, p.Dir, tool.Path, "build", "-mod=readonly", "-trimpath", "-o", temporary, "main.go", "app.go"); err != nil {
+	args := []string{"build", "-mod=readonly", "-trimpath", "-o", temporary, "main.go", "app.go"}
+	if p.Spec.DataSchema != "" {
+		args = append(args, "runtime.go")
+	}
+	if out, err := command(ctx, p.Dir, tool.Path, args...); err != nil {
 		return fmt.Errorf("compile app: %w\n%s", err, out)
 	}
 	if err := ctx.Err(); err != nil {
@@ -255,13 +273,37 @@ func (p *Project) Run(ctx context.Context, in io.Reader, out, stderr io.Writer) 
 	if !p.Ready() {
 		return fmt.Errorf("app needs a successful build before it can run")
 	}
+	release, err := p.Acquire()
+	if err != nil {
+		return err
+	}
+	defer release()
+	if !p.Ready() {
+		return fmt.Errorf("app build changed; reopen it before launching")
+	}
+	if err = p.checkActive(ctx); err != nil {
+		return err
+	}
+	if err = p.ValidateData(); err != nil {
+		return err
+	}
+	launchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	auth, err := integrations.Runtime(launchCtx, p.Spec.Requirements, p.Bindings)
+	cancel()
+	if err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, p.binary())
 	cmd.Dir, cmd.Env = p.Dir, Environment()
+	if p.Spec.DataSchema != "" {
+		raw, _ := json.Marshal(auth)
+		cmd.Env = append(cmd.Env, "TUILOR_APP_AUTH="+string(raw))
+	}
 	cmd.Stdin, cmd.Stdout = in, out
 	var diagnostics limitedOutput
 	cmd.Stderr = io.MultiWriter(stderr, &diagnostics)
 	cmd.WaitDelay = 2 * time.Second
-	err := cmd.Start()
+	err = cmd.Start()
 	if err == nil {
 		stop := forwardResize(cmd.Process)
 		defer stop()

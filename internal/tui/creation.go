@@ -91,7 +91,7 @@ func (c creationModel) View(width, height int) string {
 			line.Foreground(welcomeLilac).Render("YOUR BRIEF"))
 	}
 	model := line.Foreground(welcomeLilac).Render("Model: " + escapeControls(generator.ConfiguredModel()) + " · Custom Go app")
-	billing := line.Foreground(welcomeMuted).Render("OpenAI request (billable).")
+	billing := line.Foreground(welcomeMuted).Render("OpenAI + optional documentation search (billable).")
 	permissions := line.Foreground(welcomePeach).Render("Generate builds & runs code with your OS permissions.")
 	if compact {
 		model = line.Foreground(welcomeLilac).Render("Model: " + escapeControls(generator.ConfiguredModel()))
@@ -128,7 +128,7 @@ func (c creationModel) View(width, height int) string {
 func (m Model) generationView() string {
 	panel := studioWidth(m.width)
 	line := lipgloss.NewStyle().Width(panel).MaxWidth(panel).MaxHeight(1)
-	title, detail, notice, help := "Checking Go and generating application source…", "Designing the layout and behavior from your brief.", "OpenAI request is billable.", "Esc Cancel · Ctrl+C Quit"
+	title, detail, notice, help := "Checking Go and generating application source…", "Designing the layout and behavior from your brief.", "OpenAI and optional documentation search are billable.", "Esc Cancel · Ctrl+C Quit"
 	switch m.screen {
 	case "codebuilding":
 		title, detail, notice = "Preparing dependencies and compiling app…", "Checking the generated source before it can run.", "A successful build opens automatically."

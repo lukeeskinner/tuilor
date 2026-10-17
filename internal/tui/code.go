@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,9 +59,19 @@ func (m Model) beginCodeGeneration(provider generator.Provider, repair bool) (te
 	if m.loading {
 		return m, nil
 	}
-	prompt := m.creator.prompt.Value()
+	prompt := ""
+	if m.creator != nil {
+		prompt = m.creator.prompt.Value()
+	}
+	if m.modifying && m.modifier != nil {
+		prompt = m.modifier.prompt.Value()
+	}
 	var previous *codeapp.Spec
 	var old *codeapp.Project
+	if m.modifying && !repair {
+		previous = &m.revisionBase.Spec
+		old = m.revisionBase
+	}
 	if repair {
 		prompt = m.codePrompt
 		previous = m.codeSpec
@@ -74,15 +85,18 @@ func (m Model) beginCodeGeneration(provider generator.Provider, repair bool) (te
 		m.screen = "codereview"
 		return m, nil
 	}
-	if !repair {
+	if !repair && !m.modifying {
 		m.codeProject, m.codeSpec, m.codeError = nil, nil, ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	m.cancel, m.done = cancel, make(chan struct{})
 	m.loading, m.screen = true, "codegenerating"
 	m.codeReturn = "create"
-	if repair {
+	if repair || m.modifying {
 		m.codeReturn = "codereview"
+	}
+	if m.modifying && !repair {
+		m.codeReturn = "modify"
 	}
 	m.codePrompt = prompt
 	if m.creator != nil {
@@ -103,7 +117,7 @@ func (m Model) beginCodeGeneration(provider generator.Provider, repair bool) (te
 		}
 		project, err := codeapp.Create(ctx, directory, spec)
 		if err == nil && old != nil {
-			err = codeapp.CopyData(ctx, filepath.Join(old.Dir, "data"), filepath.Join(directory, "data"))
+			err = project.CopyTrial(ctx, old)
 		}
 		if ctx.Err() != nil {
 			os.RemoveAll(directory)
@@ -133,6 +147,9 @@ func (m Model) codePrepared(msg codePreparedMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if msg.err != nil {
+		if errors.Is(msg.err, context.DeadlineExceeded) {
+			msg.err = fmt.Errorf("Generation timed out; no app was launched. Your prompt is preserved. Generate again only when ready for another paid request: %w", msg.err)
+		}
 		m.codeCursor = 0
 		if msg.project != nil && msg.project.Draft && msg.project != m.codeProject {
 			_ = os.RemoveAll(msg.project.Dir)
@@ -193,12 +210,15 @@ func (m Model) codeBuilt(msg codeBuiltMsg) (tea.Model, tea.Cmd) {
 		m.screen = "codereview"
 		return m, nil
 	}
-	m.launchCode = true
-	return m, tea.Quit
+	return m.prepareCodeLaunch()
 }
 
 func (m Model) codeCanceled() (tea.Model, tea.Cmd) {
 	m.screen = m.codeReturn
+	if m.screen == "modify" {
+		m.modifier.setMessage("Modification canceled. Your prompt is preserved.", m.width, m.height)
+		return m, m.modifier.focus()
+	}
 	if m.screen == "create" {
 		m.creator.setMessage("Generation canceled. Your prompt is preserved.", m.width, m.height)
 		return m, m.creator.focus()
@@ -212,9 +232,19 @@ func (m Model) codeChoices() []string {
 	var choices []string
 	if m.currentCodeReady() {
 		if m.codeProject.Draft {
-			choices = append(choices, "Save")
+			if m.codeProject.Root != "" {
+				choices = append(choices, "Keep Revision")
+			} else {
+				choices = append(choices, "Save")
+			}
 		}
 		choices = append(choices, "Run Again")
+		if !m.codeProject.Draft && m.codeProject.Spec.DataSchema != "" {
+			choices = append(choices, "Modify with AI (billable)")
+			if m.codeProject.Previous() {
+				choices = append(choices, "Restore Previous Version")
+			}
+		}
 	}
 	if m.codeError != "" && m.codeSpec != nil {
 		choices = append(choices, "Repair with AI (billable)")
@@ -245,7 +275,17 @@ func (m Model) codeReviewKey(key string) (tea.Model, tea.Cmd) {
 			m.codeReturn = "codereview"
 			m.screen = "codeconfirm"
 			return m, nil
-		case "Save":
+		case "Modify with AI (billable)":
+			m.revisionBase = m.codeProject
+			m.modifier = newCreation()
+			m.modifier.prompt.Placeholder = "Describe the change. Existing data format will be preserved."
+			m.modifier.resize(m.width, m.height)
+			m.screen = "modify"
+			return m, m.modifier.focus()
+		case "Restore Previous Version":
+			m.screen = "coderestoreconfirm"
+			return m, nil
+		case "Save", "Keep Revision":
 			m.loading, m.screen = true, "saving"
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			m.cancel, m.done = cancel, make(chan struct{})
@@ -274,10 +314,22 @@ func (m Model) codeReviewKey(key string) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) leaveCode() (tea.Model, tea.Cmd) {
+	if m.revisionBase != nil && (m.codeProject == nil || !m.codeProject.Draft) {
+		m.codeProject = m.revisionBase
+		spec := m.revisionBase.Spec
+		m.codeSpec = &spec
+		m.revisionBase = nil
+		m.modifying = false
+		m.codeError = "Revision discarded. Saved app unchanged."
+		m.screen = "codereview"
+		return m, nil
+	}
 	if m.codeProject != nil && !m.codeProject.Draft {
-		path := m.codeProject.Dir
+		path := m.codeProject.Path()
 		m.codeProject = nil
 		m.codeSpec = nil
+		m.revisionBase = nil
+		m.modifying = false
 		m.returnToLibrary(path)
 		return m, nil
 	}
@@ -287,6 +339,16 @@ func (m Model) leaveCode() (tea.Model, tea.Cmd) {
 			m.codeError = fmt.Sprintf("Discard failed: %s", err)
 			return m, nil
 		}
+	}
+	if m.revisionBase != nil {
+		m.codeProject = m.revisionBase
+		spec := m.revisionBase.Spec
+		m.codeSpec = &spec
+		m.revisionBase = nil
+		m.modifying = false
+		m.codeError = "Revision discarded. Saved app unchanged."
+		m.screen = "codereview"
+		return m, nil
 	}
 	m.codeProject, m.codeSpec, m.codeError = nil, nil, ""
 	if m.creator == nil {
@@ -303,8 +365,11 @@ func (m Model) codeView() string {
 		name = m.codeSpec.Name
 	}
 	status := "Unsaved project · source and trial data stay together"
+	if m.codeProject != nil && m.codeProject.Draft && m.codeProject.Root != "" {
+		status = "Unsaved revision · trial data isolated · GitHub changes are real"
+	}
 	if m.codeProject != nil && !m.codeProject.Draft {
-		status = "Saved: " + m.codeProject.Dir
+		status = "Saved: " + m.codeProject.Path()
 	}
 	panel := studioWidth(m.width)
 	line := lipgloss.NewStyle().MaxWidth(panel).MaxHeight(1)

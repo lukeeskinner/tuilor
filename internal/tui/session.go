@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/lukeeskinner/tuilor/internal/capability"
+	"github.com/lukeeskinner/tuilor/internal/codeapp"
 	"github.com/lukeeskinner/tuilor/internal/localapp"
 )
 
@@ -68,3 +69,38 @@ func ConfirmGoApp(ctx context.Context, name string, in io.Reader, out io.Writer)
 	}
 	return result.(goAppConfirmation).approved, nil
 }
+
+// ResolveAppConnections runs only connection approval/setup, without generation.
+func ResolveAppConnections(ctx context.Context, project *codeapp.Project, in io.Reader, out io.Writer) (bool, error) {
+	if len(project.Spec.Requirements) == 0 {
+		return true, nil
+	}
+	model := NewModel("")
+	model.codeProject = project
+	spec := project.Spec
+	model.codeSpec = &spec
+	next, cmd := model.prepareCodeLaunch()
+	session := connectionSession{model: next.(Model), start: cmd}
+	result, err := tea.NewProgram(session, tea.WithAltScreen(), tea.WithContext(ctx), tea.WithInput(in), tea.WithOutput(out)).Run()
+	if final, ok := result.(connectionSession); ok {
+		err = errors.Join(err, final.model.Close())
+		return final.model.CodeLaunch() != nil, err
+	}
+	return false, err
+}
+
+type connectionSession struct {
+	model Model
+	start tea.Cmd
+}
+
+func (s connectionSession) Init() tea.Cmd { return s.start }
+func (s connectionSession) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	next, cmd := s.model.Update(msg)
+	s.model = next.(Model)
+	if s.model.screen == "codereview" || s.model.screen == "home" {
+		return s, tea.Quit
+	}
+	return s, cmd
+}
+func (s connectionSession) View() string { return s.model.View() }

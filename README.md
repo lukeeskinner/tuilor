@@ -32,9 +32,9 @@ echo
 ```
 
 1. Choose **Create App** and describe its behavior, layout, and keyboard controls.
-2. Enter inserts a newline; **Ctrl+G** starts one billable OpenAI request.
+2. Enter inserts a newline; **Ctrl+G** starts one billable OpenAI request, which may research public documentation (also billable).
 3. Tuilor checks Go before the paid request, generates source, and compiles it.
-4. A successful build opens automatically. **Esc** or **Ctrl+C** returns to Tuilor.
+4. If connections are needed, approve a saved connection or add one and sign in. A successful, connected build opens automatically. **Esc** or **Ctrl+C** returns to Tuilor.
 5. Choose **Save**, **Run Again**, or **Discard**. Save retains source and trial data.
 6. After saving, Esc opens My Apps with the new app selected.
 
@@ -49,18 +49,20 @@ or a calculator with a custom layout. New apps are not restricted to forms, one
 page, one collection, or task management. Compilation proves buildability, not
 correct behavior, safety, or visual quality. Real API integrations still need real
 credentials and supported wiring; Tuilor does not invent working connections.
-MCP-backed apps and managed native connectors remain future work.
+GitHub and custom REST APIs are supported through the host request helper. MCP-backed generated apps remain future work.
 
 The AI writes `app.go` with `newModel() (tea.Model, error)`. The host owns main.go,
 startup/exit, resize delivery, and loadData/saveData helpers. Generated code owns
 the domain state, interactions, and responsive layout. Instructions require
 scrolling, focus visibility, narrow layouts and very-small-terminal fallbacks.
 The default modules are the standard library, Bubble Tea 1.3.10, Bubbles 1.0.0,
-and Lip Gloss 1.1.0. Additional modules require an explicit user request and exact
+Lip Gloss 1.1.0, and the host JSON Schema validator 0.4.3. Additional modules require an explicit user request and exact
 pinned versions. Tuilor does not install servers automatically; build and launch
 commands use separate arguments without shell interpolation.
 
 The existing `gpt-6.1-sol` model default and `TUILOR_MODEL` override are retained.
+The default model uses low reasoning effort to fit interactive generation's time
+budget. Other configured models retain their provider defaults.
 The model must support Responses and strict Structured Outputs. JSON transports
 the source and metadata; it does not define the generated app's interface.
 Generation/preflight has a 90-second deadline. Dependency preparation and
@@ -70,8 +72,8 @@ are disabled. Esc cancels and waits for cleanup; canceled/failed builds never op
 Errors retain the prompt and candidate. **Repair with AI (billable)** sends the
 previous source and diagnostics in one explicit request, then compiles again.
 Tuilor never retries or repairs paid requests automatically. A failed repair keeps
-previous trial data; repairs are instructed to preserve its format, but there is
-no general schema-migration guarantee for arbitrary generated code.
+previous trial data. New apps declare a persistent-data schema; revisions must keep
+it unchanged. Structural validation does not prove behavioral compatibility.
 
 The colorful intro and creation workspace remain. Press any key to skip startup;
 `TUILOR_REDUCED_MOTION=1` skips it and `NO_COLOR=1` disables colors. `q` remains
@@ -92,20 +94,97 @@ Omit it for a host-assigned ID. --output-dir chooses the library; use the same
 path through run --apps-dir or the root --apps-dir. --timeout changes only the
 generation/preflight deadline, not the separate build deadline.
 
-A saved Go app directory contains manifest.json, app.go, main.go, pinned module
-files, data/, and a cached executable in .bin/. Keep it together when moving it.
-Source/starter/module/platform fingerprints and binary hashes detect stale caches;
-they are not signatures or a sandbox. Missing/stale builds rebuild without AI,
-requiring Go and possibly dependency downloads. Build failures are shown rather
-than triggering automatic regeneration. Saved Go apps are labeled **Go app**.
+New saved apps use a version 2 host manifest with an active revision:
 
-Unsaved projects live in a private session workspace. Save stages a complete
-sibling directory and renames it into place; repeated Save does not duplicate.
-Failed saves preserve the candidate, and Discard restores the prompt. The CLI
-cleans session files on exit. Starter data helpers atomically replace JSON and
-preserve malformed files. Generated code must use these helpers correctly; they
-are conventions, not enforcement against arbitrary code. Use one instance per
-Go app: generated programs do not acquire the declarative store's writer lock.
+```text
+apps/<app-id>/
+  manifest.json
+  revisions/<revision-id>/
+    manifest.json
+    app.go / main.go / runtime.go
+    go.mod / go.sum
+    data.schema.json
+    data/state.json
+    .bin/app
+```
+
+Keep the directory together when moving it. Nonsecret connection bindings are saved
+with each revision; credentials stay in your OS credential store. Cache fingerprints
+cover source, host helpers, contract, modules and platform. Missing/stale builds
+rebuild without AI. Existing flat Go projects still open without migration.
+
+Unsaved projects and trial data live in a private session workspace. Save publishes
+a complete directory atomically; repeated Save does not duplicate. Failed saves
+preserve the candidate. The CLI cleans unsaved files on exit. Host storage helpers
+validate JSON and atomically replace it, preserving malformed or invalid data.
+An app-level writer lock excludes competing Tuilor launches and publications.
+Generated Go still has full OS permissions and can bypass helper conventions.
+
+## Connections
+
+Open **Settings → Connections → Add integration**:
+
+- **[GH] GitHub:** browser device sign-in or hidden personal access token entry.
+  Browser sign-in requires the maintainer's registered OAuth application with device
+  flow enabled: set `TUILOR_GITHUB_CLIENT_ID` to its public client ID. No client
+  secret or hosted backend is used. The default browser scopes cover public
+  repositories; for private access use a token with the appropriate repository and
+  organization permissions. Token entry works without a client ID.
+- **[+] Custom API:** enter a name and base URL, then choose none, bearer, named
+  header, or named query-parameter authentication. HTTPS is required except for
+  loopback development servers. Other services' browser OAuth flows are unsupported.
+
+Settings expose Edit, Check access, Reconnect / Sign in, Sign out and confirmed
+Remove. Custom API status means **Configured**, not verified live functionality.
+GitHub checks validate account identity. Sign-out removes local credentials;
+provider-side authorization may remain. `i` toggles optional Nerd Font icons; text
+badges are the default and service names are always visible. No font is installed.
+
+Nonsecret settings are in `os.UserConfigDir()/tuilor/integrations.json`. Tokens use
+the OS credential store, without a plaintext fallback. Unavailable or locked stores
+produce an error. Damaged configuration is reported and never reset automatically.
+
+Try:
+
+```sh
+./bin/tuilor create "Build a GitHub issue triage workspace: select a repository, browse and filter real issues, and let me change labels and assignees" --name issue-triage
+./bin/tuilor run issue-triage
+```
+
+The app proposes connections; you approve the binding before launch. Saved bindings
+are reused and refreshed as needed, without AI. GitHub permission limitations and
+API errors remain visible. No MCP subprocess is needed.
+
+The host `apiRequest` helper returns a Bubble Tea command. `APIResultMsg` reports
+status, bounded body, pagination/rate-limit metadata and safe errors. Requests stay
+within the approved API destination. Every non-GET request requires confirmation
+of its exact method, endpoint, headers and JSON body. Credentials are hidden. Esc
+cancels without sending; writes are never retried automatically. A timeout may
+mean a write succeeded, so refresh before trying again.
+
+Only selected integration credentials reach the app at launch in transient
+configuration, removed from its environment on startup. They are never sent to the
+model or compiler, or written into a project. This helper is **not a sandbox**:
+trusted Go source can access OS resources and bypass its conventions. Reopening
+requires neither an OpenAI key nor an AI request; stale builds still require Go.
+
+## Modify and restore an app
+
+After opening a newly generated saved app, exit to its review screen and choose
+**Modify with AI (billable)**. For example: “Add a repository filter and group
+issues by label.” Enter inserts newlines; Ctrl+G makes one explicit paid request.
+
+The candidate builds separately and trials a copy of current local data. Choose
+**Keep Revision**, **Run Again**, or **Discard**. Keep publishes the complete
+revision and atomically switches the active pointer. If saved data changed during
+the trial, publication fails rather than overwriting newer data.
+
+**Restore Previous Version** asks for confirmation, restores the previous code,
+and carries forward current local data under the unchanged schema. It never undoes
+GitHub/API changes. All trial API writes are real and still require confirmation.
+Saved records and credentials are not sent to AI. Schema changes and migrations
+are unsupported. Existing apps without a data contract still run; they are not
+silently enrolled in schema-backed modification.
 
 Try a hand-authored source app without a paid request, using an unused destination:
 
@@ -185,7 +264,7 @@ Each check closes its session, so **Last check passed** describes the last check
 not a continuously running connection. Tools are rediscovered on each check.
 
 This milestone performs initialization and tool discovery only: **no AI requests
-or tool calls**. Generated apps do not use these connections yet. Native integrations and
+or tool calls**. Generated apps do not use these MCP connections. Additional native integrations and
 explicitly approved MCP-backed actions remain future work.
 
 ## Standalone discovery

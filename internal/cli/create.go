@@ -50,7 +50,7 @@ func newCreateWithProvider(factory func() (generator.Provider, error)) *cobra.Co
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Generating Go with %s (billable OpenAI request). Saved apps run with your OS permissions, without a sandbox.\n", EscapeTerminalControls(generator.ConfiguredModel())); err != nil {
+		if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Generating Go with %s (billable OpenAI request and optional documentation search). Saved apps run with your OS permissions, without a sandbox.\n", EscapeTerminalControls(generator.ConfiguredModel())); err != nil {
 			return err
 		}
 		spec, err := generator.GenerateCode(ctx, provider, args[0], nil, "")
@@ -79,7 +79,7 @@ func newCreateWithProvider(factory func() (generator.Provider, error)) *cobra.Co
 		if err != nil {
 			return err
 		}
-		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\nApp ID: %s\nRun: tuilor run %s --apps-dir %q\n", EscapeTerminalControls(saved.Dir), EscapeTerminalControls(filepath.Base(saved.Dir)), EscapeTerminalControls(filepath.Base(saved.Dir)), directory)
+		_, err = fmt.Fprintf(cmd.OutOrStdout(), "Saved %s\nApp ID: %s\nRun: tuilor run %s --apps-dir %q\n", EscapeTerminalControls(saved.Path()), EscapeTerminalControls(filepath.Base(saved.Path())), EscapeTerminalControls(filepath.Base(saved.Path())), directory)
 		return err
 	}}
 	cmd.Flags().StringVar(&directory, "output-dir", "apps", "Directory for saved applications")

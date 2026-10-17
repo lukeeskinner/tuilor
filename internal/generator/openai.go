@@ -59,7 +59,7 @@ func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) 
 	if maxTokens <= 0 {
 		maxTokens = 8192
 	}
-	response, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
+	params := responses.ResponseNewParams{
 		Model:           shared.ResponsesModel(p.model),
 		Instructions:    openai.String(request.Instructions),
 		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String(request.Input)},
@@ -70,7 +70,18 @@ func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) 
 				Name: "tuilor_app", Schema: request.Schema, Strict: openai.Bool(true),
 			},
 		}},
-	})
+	}
+	// Interactive generation has a 90-second budget. Sol defaults to medium
+	// reasoning; use its supported low setting rather than changing models.
+	// Leave other configured models' parameters alone.
+	if p.model == DefaultModel || strings.HasPrefix(p.model, DefaultModel+"-") {
+		params.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffortLow}
+	}
+	if request.Research {
+		params.Tools = []responses.ToolUnionParam{{OfWebSearch: &responses.WebSearchToolParam{Type: "web_search", SearchContextSize: "low"}}}
+		params.MaxToolCalls = openai.Int(5)
+	}
+	response, err := p.client.Responses.New(ctx, params)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("OpenAI request: %w", ctx.Err())
@@ -86,6 +97,9 @@ func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) 
 		return nil, fmt.Errorf("OpenAI response was not completed (status %q); try a smaller app request", response.Status)
 	}
 	for _, item := range response.Output {
+		if item.Type == "web_search_call" && request.Research {
+			continue
+		}
 		if item.Type != "message" && item.Type != "reasoning" {
 			return nil, fmt.Errorf("OpenAI returned unexpected output type %q", item.Type)
 		}

@@ -69,6 +69,10 @@ func newRunCommand() *cobra.Command {
 				return err
 			}
 		}
+		approved, err = tui.ResolveAppConnections(cmd.Context(), project, cmd.InOrStdin(), cmd.OutOrStdout())
+		if err != nil || !approved {
+			return err
+		}
 		return project.Run(cmd.Context(), cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
 	}}
 	cmd.Flags().StringVar(&directory, "apps-dir", "apps", "Directory containing saved applications")

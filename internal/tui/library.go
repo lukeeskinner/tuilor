@@ -37,12 +37,16 @@ func (m *Model) readLibrary() {
 		data, err := os.ReadFile(path)
 		var header struct {
 			Kind string `json:"kind"`
+			Name string `json:"name"`
 			App  struct {
 				Name string `json:"name"`
 			} `json:"app"`
 		}
 		if err == nil {
 			_ = json.Unmarshal(data, &header)
+		}
+		if header.App.Name == "" {
+			header.App.Name = header.Name
 		}
 		if strings.TrimSpace(header.App.Name) != "" {
 			label = header.App.Name + " (" + name + ")"
@@ -53,7 +57,7 @@ func (m *Model) readLibrary() {
 			continue
 		}
 		m.files = append(m.files, name)
-		m.fileLabels = append(m.fileLabels, label)
+		m.fileLabels = append(m.fileLabels, escapeControls(label))
 	}
 }
 

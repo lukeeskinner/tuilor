@@ -14,10 +14,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lukeeskinner/tuilor/internal/codeapp"
 	"github.com/lukeeskinner/tuilor/internal/connections"
+	"github.com/lukeeskinner/tuilor/internal/generator"
 	"github.com/lukeeskinner/tuilor/internal/localapp"
 )
 
 type Model struct {
+	api                               *apiModel
+	settingsCursor                    int
+	modifier                          *creationModel
+	revisionBase                      *codeapp.Project
+	modifying                         bool
 	workspace                         string
 	runtime                           *Runtime
 	localStore                        *localapp.Store
@@ -89,6 +95,14 @@ func (m Model) Close() error {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case apiMsg:
+		return m.apiResult(msg)
+	case apiURLMsg:
+		if m.api != nil && msg.request == m.api.request && m.loading && !m.api.cancelled {
+			m.api.url = msg.url
+			m.api.code = msg.code
+		}
+		return m, nil
 	case connectionMsg:
 		return m.connectionResult(msg)
 	case connectionURLMsg:
@@ -118,6 +132,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.creator != nil {
 			m.creator.resize(m.width, m.height)
 		}
+		if m.modifier != nil {
+			m.modifier.resize(m.width, m.height)
+		}
+		if m.api != nil {
+			for i := range m.api.inputs {
+				m.api.inputs[i].Width = max(1, studioWidth(m.width)-6)
+			}
+		}
 		if m.mcp != nil && m.mcp.form != nil {
 			m.mcp.form.resize(m.width)
 		}
@@ -136,6 +158,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.codeError = "Save failed: " + msg.err.Error()
 		} else {
 			m.codeProject = msg.project
+			m.revisionBase = nil
+			m.modifying = false
+			if msg.project != nil {
+				spec := msg.project.Spec
+				m.codeSpec = &spec
+			}
 			m.codeError = ""
 		}
 		return m, nil
@@ -167,7 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err, m.screen = msg.err, "apps"
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.screen != "localapp" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
+		if key == "ctrl+c" || (key == "q" && m.screen != "apiform" && m.screen != "apibusy" && m.screen != "modify" && m.screen != "localapp" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -177,6 +205,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.quitting {
 			return m, nil
+		}
+		if m.api != nil && strings.HasPrefix(m.screen, "api") {
+			return m.apiKey(msg)
 		}
 		if m.mcp != nil && strings.HasPrefix(m.screen, "mcp") {
 			return m.connectionKey(msg)
@@ -191,6 +222,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
+			case "coderestoreconfirm":
+				m.screen = "codereview"
 			case "codeconfirm":
 				m.screen = m.codeReturn
 				if m.screen == "" {
@@ -202,6 +235,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 				m.screen = "codecancel"
 			case "saving":
+				return m, nil
+			case "modify":
+				m.screen = "codereview"
+				m.modifying = false
 				return m, nil
 			case "create":
 				m.creator.prompt.Blur()
@@ -215,15 +252,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch m.screen {
+		case "coderestoreconfirm":
+			if key == "enter" {
+				m.loading = true
+				m.screen = "saving"
+				ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+				m.cancel = cancel
+				m.done = make(chan struct{})
+				done := m.done
+				p := m.codeProject
+				workspace := m.workspace
+				return m, func() tea.Msg {
+					defer close(done)
+					defer cancel()
+					saved, err := p.Restore(ctx, workspace)
+					return codeSavedMsg{saved, err}
+				}
+			}
 		case "codeconfirm":
 			if key == "enter" {
 				if m.codeProject.Ready() {
-					m.launchCode = true
-					return m, tea.Quit
+					return m.prepareCodeLaunch()
 				}
 				return m.beginCodeBuild(m.codeProject, codeapp.Toolchain{})
 			}
 		case "settings":
+			if key == "up" {
+				m.settingsCursor = 0
+			}
+			if key == "down" {
+				m.settingsCursor = 1
+			}
+			if key == "enter" && m.settingsCursor == 0 {
+				m.api = newAPI()
+				return m.beginAPI("load")
+			}
 			if key == "enter" {
 				if m.mcp == nil {
 					m.mcp = newConnections()
@@ -233,6 +296,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "codereview":
 			return m.codeReviewKey(key)
+		case "modify":
+			if key == "ctrl+g" {
+				provider, err := generator.NewOpenAIFromEnv()
+				if err != nil {
+					m.modifier.setMessage(err.Error(), m.width, m.height)
+					return m, nil
+				}
+				m.modifying = true
+				return m.beginCodeGeneration(provider, false)
+			}
 		case "create":
 			if key == "ctrl+g" {
 				return m.beginGeneration()
@@ -253,6 +326,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.readLibrary()
 				}
 				if m.cursor == 1 {
+					m.modifying = false
+					m.revisionBase = nil
 					if m.creator == nil {
 						m.creator = newCreation()
 					}
@@ -295,6 +370,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.creator.prompt, cmd = m.creator.prompt.Update(msg)
 		return m, cmd
 	}
+	if m.screen == "modify" {
+		var cmd tea.Cmd
+		m.modifier.prompt, cmd = m.modifier.prompt.Update(msg)
+		return m, cmd
+	}
+	if m.screen == "apiform" {
+		return m, m.updateAPIInputs(msg)
+	}
 	if m.screen == "mcpform" {
 		return m, m.mcp.form.update(msg)
 	}
@@ -303,6 +386,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	if m.api != nil && strings.HasPrefix(m.screen, "api") {
+		return m.apiView()
+	}
 	if m.quitting {
 		return "Stopping current operation…\n"
 	}
@@ -312,10 +398,12 @@ func (m Model) View() string {
 	switch m.screen {
 	case "localapp":
 		return m.runtime.View()
+	case "coderestoreconfirm":
+		return m.welcomeCanvas("Restore previous code with current local data?\nGitHub changes will not be undone.\n\nEnter Restore · Esc Cancel")
 	case "codeconfirm":
 		return m.welcomeCanvas(goAppNotice(m.codeProject.Spec.Name))
 	case "settings":
-		return m.welcomeCanvas(studioHeader("Settings", studioWidth(m.width)) + "\n\n> Advanced connections (MCP)\n\nEnter Open · Esc Back · q Quit")
+		return m.welcomeCanvas(studioHeader("Settings", studioWidth(m.width)) + "\n\n" + menu([]string{"Connections", "Advanced connections (MCP)"}, m.settingsCursor, m.height) + "\nEnter Open · Esc Back · q Quit")
 	case "boot":
 		return m.bootView()
 	case "home":
@@ -336,6 +424,8 @@ func (m Model) View() string {
 		return m.generationView()
 	case "codereview":
 		return m.codeView()
+	case "modify":
+		return m.welcomeCanvas(strings.Replace(m.modifier.View(m.width, m.height), "Create App", "Modify App", 1))
 	case "create":
 		return m.welcomeCanvas(m.creator.View(m.width, m.height))
 	case "loading":

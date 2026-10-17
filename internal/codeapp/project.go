@@ -10,34 +10,75 @@ import (
 	"go/format"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/lukeeskinner/tuilor/internal/integrations"
 )
 
 type Spec struct {
-	Name         string       `json:"name"`
-	Source       string       `json:"source,omitempty"`
-	Dependencies []Dependency `json:"dependencies"`
+	Name          string                     `json:"name"`
+	Source        string                     `json:"source,omitempty"`
+	Dependencies  []Dependency               `json:"dependencies"`
+	Requirements  []integrations.Requirement `json:"integrations,omitempty"`
+	Documentation []string                   `json:"documentation,omitempty"`
+	DataSchema    string                     `json:"data_schema,omitempty"`
+	InitialState  string                     `json:"initial_state,omitempty"`
 }
 
 type Project struct {
-	Dir        string `json:"-"`
-	Draft      bool   `json:"-"`
-	Kind       string `json:"kind"`
-	Version    int    `json:"version"`
-	Spec       Spec   `json:"app"`
-	GoVersion  string `json:"go_version"`
-	BuildKey   string `json:"build_key"`
-	BinaryHash string `json:"binary_hash"`
-	ModuleKey  string `json:"module_key"`
+	Dir          string            `json:"-"`
+	Root         string            `json:"-"`
+	BaseRevision string            `json:"-"`
+	BaseData     string            `json:"-"`
+	Bindings     map[string]string `json:"bindings,omitempty"`
+	Draft        bool              `json:"-"`
+	Kind         string            `json:"kind"`
+	Version      int               `json:"version"`
+	Spec         Spec              `json:"app"`
+	GoVersion    string            `json:"go_version"`
+	BuildKey     string            `json:"build_key"`
+	BinaryHash   string            `json:"binary_hash"`
+	ModuleKey    string            `json:"module_key"`
 }
 
 func (s Spec) Validate() error {
 	if strings.TrimSpace(s.Name) == "" || len(s.Name) > 200 || strings.TrimSpace(s.Source) == "" || len(s.Source) > 256*1024 {
 		return fmt.Errorf("generated app requires a name (up to 200 bytes) and source (up to 256 KiB)")
+	}
+	if len(s.Requirements) > 16 {
+		return fmt.Errorf("at most 16 integrations are supported")
+	}
+	seen := map[string]bool{}
+	for _, r := range s.Requirements {
+		if err := r.Validate(); err != nil {
+			return err
+		}
+		if seen[r.ID] {
+			return fmt.Errorf("duplicate integration requirement")
+		}
+		seen[r.ID] = true
+	}
+	if len(s.Requirements) > 0 && s.DataSchema == "" {
+		return fmt.Errorf("connected apps require a persistent-data contract")
+	}
+	if s.DataSchema != "" {
+		if _, err := CanonicalSchema(s.DataSchema); err != nil {
+			return err
+		}
+		if err := ValidateState(s.DataSchema, []byte(s.InitialState)); err != nil {
+			return fmt.Errorf("invalid initial state: %w", err)
+		}
+	}
+	for _, raw := range s.Documentation {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil {
+			return fmt.Errorf("documentation references must be public HTTPS URLs")
+		}
 	}
 	return validateDependencies(s.Dependencies)
 }
@@ -68,6 +109,9 @@ func Create(ctx context.Context, directory string, spec Spec) (*Project, error) 
 	if err := p.writeManifest(); err != nil {
 		return nil, err
 	}
+	if err := p.initializeState(); err != nil {
+		return nil, err
+	}
 	complete = true
 	return p, nil
 }
@@ -77,12 +121,12 @@ func (p *Project) writeSource() error {
 	if formatted, err := format.Source(source); err == nil {
 		source = formatted
 	}
-	for name, data := range map[string][]byte{"app.go": source, "main.go": []byte(Starter)} {
+	for name, data := range map[string][]byte{"app.go": source, "main.go": []byte(p.starter())} {
 		if err := atomicFile(filepath.Join(p.Dir, name), data, 0600); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
 	}
-	return nil
+	return p.writeContract()
 }
 
 func (p *Project) writeManifest() error {
@@ -125,6 +169,9 @@ func Open(ctx context.Context, directory string) (*Project, error) {
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, fmt.Errorf("decode project manifest: %w", err)
 	}
+	if p.Kind == "go" && p.Version == 2 {
+		return openRevision(ctx, directory)
+	}
 	if p.Kind != "go" || p.Version != 1 {
 		return nil, fmt.Errorf("unsupported generated project format")
 	}
@@ -160,10 +207,18 @@ func fileHash(path string) (string, error) {
 
 func (p *Project) fingerprint() (string, error) {
 	h := sha256.New()
-	io.WriteString(h, Starter+"\x00"+runtime.GOOS+"/"+runtime.GOARCH+"\x00"+p.GoVersion)
+	io.WriteString(h, p.starter()+"\x00"+runtime.GOOS+"/"+runtime.GOARCH+"\x00"+p.GoVersion)
 	deps, _ := json.Marshal(p.Spec.Dependencies)
 	h.Write(deps)
-	for _, name := range []string{"main.go", "app.go", "go.mod", "go.sum"} {
+	if p.Spec.DataSchema != "" {
+		metadata, _ := json.Marshal(struct {
+			Schema       string
+			Requirements []integrations.Requirement
+		}{p.Spec.DataSchema, p.Spec.Requirements})
+		h.Write(metadata)
+		h.Write([]byte(runtimeSource))
+	}
+	for _, name := range append([]string{"main.go", "app.go", "go.mod", "go.sum"}, p.contractFiles()...) {
 		data, err := readRegular(filepath.Join(p.Dir, name))
 		if err != nil {
 			return "", err
@@ -276,6 +331,9 @@ func (p *Project) SaveAs(ctx context.Context, directory, id string) (*Project, e
 	if !p.Draft {
 		return p, nil
 	}
+	if p.Spec.DataSchema != "" {
+		return p.saveVersioned(ctx, directory, id)
+	}
 	if !p.Ready() {
 		return nil, fmt.Errorf("compile successfully before saving")
 	}
@@ -299,7 +357,7 @@ func (p *Project) SaveAs(ctx context.Context, directory, id string) (*Project, e
 		return nil, err
 	}
 	defer os.RemoveAll(stage)
-	for _, name := range []string{"manifest.json", "app.go", "main.go", "go.mod", "go.sum"} {
+	for _, name := range p.sourceFiles() {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}

@@ -1,6 +1,7 @@
 # Tuilor architecture
 
-Status: accepted custom Go application generation, 2026-10-17.
+Status: custom Go generation with approved API connections and schema-preserving revisions, 2026-10-17.
+[ADR 0012](adr/0012-connected-workspaces.md) extends the source pipeline.
 [ADR 0011](adr/0011-custom-go-default.md) supersedes ADR 0010's default-generation
 choice. The user chose custom layout and behavior over a fixed component catalog.
 Saved declarative bundles remain compatible; no user projects are migrated/deleted.
@@ -25,7 +26,7 @@ failures and execution of code with the user's OS privileges. This is not a sand
 The concrete generator reuses Provider, the official OpenAI Go SDK, Responses,
 strict Structured Outputs and the existing gpt-6.1-sol/TUILOR_MODEL configuration.
 The JSON envelope carries success/name/source/dependencies or unsupported/reason,
-not terminal components. The source contract requests one final Go file with
+not terminal components. New responses also carry integration requirements, documentation URLs, a data-schema JSON string and an empty initial-state JSON string. The source contract requests one final Go file with
 one package/import section and newModel factory, not drafts, patches or the host
 starter. A small compiling reference demonstrates the pinned widget and storage
 APIs while leaving layout/domain choices open. The response budget is 16,384 tokens.
@@ -39,13 +40,20 @@ context. Provider retries are disabled. Cmds own contexts, cancellation function
 and completion channels delimit lifetimes, and only one operation runs at a time.
 Esc cancels and waits for cleanup; canceled/failed work never triggers launch.
 
+The default GPT-6.1 Sol model uses its supported low reasoning effort for this
+interactive budget; other model families retain their provider defaults. Source
+instructions favor concise implementations and targeted API research. Local apps
+need no documentation lookup. Documentation entries are HTTPS URLs constrained by
+the response schema and checked locally. A generation deadline returns to the
+preserved prompt with an explicit timeout message, without another paid request.
+
 The home model preserves the multiline prompt. A fresh generation clears stale
 source/review state; successful builds request terminal handoff automatically.
 Errors preserve source and diagnostics in review. Explicit Repair with AI makes
 one new paid request using source and bounded diagnostics, then builds again.
 Existing trial data is copied into the new draft; failure/cancellation keeps the
 previous project. Data compatibility is requested but not enforceable for arbitrary
-source. There is no implicit paid retry or general migration/refinement engine.
+source. There is no implicit paid retry. Schema-preserving refinement is described below; migrations remain unsupported.
 
 ## Building, launching and saving
 
@@ -85,13 +93,12 @@ preserve the candidate. CLI --name optionally selects a validated, non-overwriti
 stable ID; otherwise the host assigns a random Go ID. User-controlled IDs, not AI
 names or source, determine paths. Discard removes drafts; final workspace cleanup
 belongs to the CLI. The starter's JSON helpers preserve corrupt data and use
-atomic replacement, but generated code must follow the contract. Unlike the
-retained local store, arbitrary Go apps have no host-enforced single-writer lock.
+atomic replacement, but generated code must follow the contract. Tuilor launches/publications now acquire the shared OS file lock. Arbitrary code can still bypass host helpers or spawn unrelated writers.
 
 CLI create uses the same source generator/build pipeline, saves without launching,
 and prints an assigned ID/run command. --output-dir, --name and --timeout remain.
 run <id> --apps-dir opens cached/rebuilt Go apps after confirmation. MCP stays
-optional under Settings; native connections and app/MCP execution are not added.
+optional under Settings → Advanced. Native API connections are separate; app/MCP execution is not added.
 
 ## Saved declarative compatibility
 
@@ -196,5 +203,79 @@ at the user's request. There is no automated regression coverage. Formatting,
 build and vet checks remain; temporary mock-HTTP/PTY fixtures can check compilation,
 opening, terminal restoration, save/reopen and repair without paid requests.
 Paid model quality, arbitrary domain correctness and visual quality require manual
-verification. Future integrations still need explicit credential/permission boundaries;
-this change does not automatically implement MCP/native service access.
+verification. Additional integrations must preserve the credential and approval boundaries below. No app/MCP bridge is implemented.
+
+## Connected workspaces (ADR 0012)
+
+The integration picker contains GitHub and Custom API only. Text badges are the
+portable default; a persisted opt-in enables Nerd Font icons with names retained.
+Presets describe connection setup, not a fixed set of generated screens or actions.
+MCP configuration remains isolated and its discovery behavior is unchanged.
+
+`internal/integrations` owns concrete configuration, OS credentials, GitHub device
+OAuth/refresh, and runtime credential resolution. Config is nonsecret, versioned,
+validated and atomically replaced. Tokens are endpoint/authentication-bound,
+chunked keyring entries; staging publishes its pointer last. There is no plaintext
+fallback. Native keyring calls may block on OS prompts; context checks cannot
+forcibly interrupt the OS and bounded shutdown must report that limitation.
+
+GitHub browser authorization requires an external maintainer registration and its
+public client ID. Device polling follows oauth2's expiry/interval/slow-down rules.
+Identity is validated after sign-in and refresh; refreshed credentials are saved
+before use. Default scopes cover public repositories. Hidden token entry supports
+private access when provider permissions permit. No GitHub CLI dependency exists.
+Custom APIs support none, bearer, header and query credentials, with no invented
+OAuth support or generic live-health endpoint.
+
+Generation receives only nonsecret connection descriptions. Optional public web
+research is bounded to five tool calls within the original 90-second request.
+Search output is reference material, never authority to execute or grant access.
+The source envelope stays strict; local validation checks requirements, schema,
+initial state, source and dependencies. Failed/canceled builds never launch. The
+host owns binding approval after compilation, without another AI request.
+
+The compiled host runtime implements apiRequest(APIRequest) tea.Cmd and
+APIResultMsg. Mutable arguments are cloned before confirmation. GET executes;
+POST/PUT/PATCH/DELETE require host confirmation of the frozen destination,
+headers and JSON body. Request destinations stay under the approved base URL,
+credential overrides and redirects are rejected, responses are bounded to 1 MiB,
+and requests have 20-second deadlines. App exit cancels outstanding work. Writes
+never retry; uncertain outcomes tell the user to refresh before another attempt.
+Pagination/rate-limit metadata is exposed without unbounded automatic crawling.
+API text is untrusted: generation instructs sanitizing it with the host apiText
+helper. Credentials are redacted from helper responses and errors.
+
+The launcher strips AI configuration and injects only approved credentials into
+transient child configuration. The starter consumes and removes that environment
+entry before newModel. Credentials never enter compiler environments, saved
+projects, prompts or diagnostics. They are available to trusted generated code:
+this design is explicitly not a broker or sandbox. Helper confirmations do not
+prevent bypass by arbitrary source. Source generation remains unrestricted in UI
+layout, rather than reviving declarative UI generation.
+
+## Data contracts and revision publication
+
+New specs include JSON Schema and an empty initial state. The existing pinned
+jsonschema-go v0.4.3 validates both host preflight and generated storage helpers.
+External references are rejected without network resolution. Schema validation
+protects structure, not semantic understanding, lossless domain behavior or safety.
+
+Version 2 root manifests point to an active project under revisions/<host-id> and
+retain a previous pointer. Each revision contains source/starter/runtime, pinned
+modules, schema, local data, cached executable, and a version 1 project manifest.
+Old flat version 1 projects remain runnable, without inferred schemas or migration.
+Fingerprints cover current host helpers and contract metadata as well as files.
+
+Modify with AI sends source, the unchanged schema and requirements; it sends no
+saved records or credentials. A draft copies data while holding the source app's
+writer lock and captures the active revision and data hash. Trials run independently
+from the saved version, but external writes remain real and confirmed. Keep stages
+a complete revision, checks that active source/data are unchanged, then atomically
+replaces the root pointer. Failure preserves active state and the candidate.
+
+Restore builds previous source with current compatible data in a draft and uses
+the same publication path. It cannot undo provider-side actions. The shared
+internal/filelock OS implementation is also used by retained local storage.
+Tuilor owns locks during launch, snapshot copying and publication; stale trials
+are rejected rather than merged. Local data migrations and concurrent merging
+are deliberately unsupported.
