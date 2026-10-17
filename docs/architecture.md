@@ -42,6 +42,21 @@ launch. Failures retain source and prompt. An explicit repair sends the prior
 source and bounded diagnostics as data in one new paid request; never retry
 implicitly. Go 1.25.5+ must be installed; Tuilor does not install toolchains.
 
+The parent TUI uses the alternate screen. Startup is a local, skippable boot
+state with eight 90ms Bubble Tea ticks; late ticks are ignored after navigation.
+Reduced-motion mode (TUILOR_REDUCED_MOTION=1) and TERM=dumb start at home directly.
+A resumed model keeps its current screen, so returning from an app does not
+replay the intro. Lip Gloss adaptive colors respect the terminal palette and
+NO_COLOR; menu focus also has a text marker. Responsive home layouts retain
+selection and help down to 20×6; smaller surfaces ask for more terminal space.
+Startup owns no sessions, network calls, or independent animation goroutines.
+The creation workspace reuses the palette in a bordered Bubbles textarea, with
+shared panel sizing for its editor and lifecycle states. Error banners adjust
+editor height; a harmless widget refresh keeps the caret visible after resizing
+or refocusing. Billing and execution notices remain visible in compact layouts.
+This changes presentation only; request, build, repair, cancellation, and save
+ownership remain in the existing commands and concrete models.
+
 The parent Bubble Tea program finishes before launch, restoring the terminal.
 The CLI owns the child lifetime and terminal stdio, then resumes the retained
 TUI model after success or failure. On Unix, forward resize signals received by

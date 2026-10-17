@@ -138,7 +138,7 @@ func (m Model) codePrepared(msg codePreparedMsg) (tea.Model, tea.Cmd) {
 		}
 		m.creator.setMessage(msg.err.Error(), m.width, m.height)
 		m.screen = "create"
-		return m, m.creator.prompt.Focus()
+		return m, m.creator.focus()
 	}
 	m.codeProject = msg.project
 	return m.beginCodeBuild(msg.project, msg.tool)
@@ -195,7 +195,7 @@ func (m Model) codeCanceled() (tea.Model, tea.Cmd) {
 	m.screen = m.codeReturn
 	if m.screen == "create" {
 		m.creator.setMessage("Generation canceled. Your prompt is preserved.", m.width, m.height)
-		return m, m.creator.prompt.Focus()
+		return m, m.creator.focus()
 	}
 	m.codeError = "Operation canceled. No app was launched."
 	m.codeCursor = 0
@@ -285,7 +285,7 @@ func (m Model) leaveCode() (tea.Model, tea.Cmd) {
 	}
 	m.creator.setMessage("Candidate discarded. Your prompt is preserved.", m.width, m.height)
 	m.screen = "create"
-	return m, m.creator.prompt.Focus()
+	return m, m.creator.focus()
 }
 
 func (m Model) codeView() string {
@@ -297,10 +297,19 @@ func (m Model) codeView() string {
 	if m.codeProject != nil && !m.codeProject.Draft {
 		status = "Saved: " + m.codeProject.Dir
 	}
-	line := lipgloss.NewStyle().MaxWidth(max(1, m.width)).MaxHeight(1)
+	panel := studioWidth(m.width)
+	line := lipgloss.NewStyle().MaxWidth(panel).MaxHeight(1)
 	details := ""
 	if m.codeError != "" {
-		details = lipgloss.NewStyle().Width(max(1, m.width)).MaxHeight(max(1, m.height-12)).Render(escapeControls(m.codeError)) + "\n\n"
+		details = lipgloss.NewStyle().Foreground(welcomePeach).Width(panel).MaxHeight(max(1, m.height-14)).Render(escapeControls(m.codeError)) + "\n\n"
 	}
-	return line.Render(escapeControls(name)) + "\n" + line.Render(escapeControls(status)) + "\n\n" + details + menu(m.codeChoices(), m.codeCursor, m.height) + "\n↑↓ Choose · Enter Select · Esc Back · Ctrl+C Quit\n"
+	header := ""
+	if m.width >= 60 && m.height >= 20 {
+		header = studioHeader("Your app", panel) + "\n\n"
+	}
+	body := header + line.Foreground(welcomeInk).Bold(true).Render(escapeControls(name)) + "\n" +
+		line.Foreground(welcomeLilac).Render(escapeControls(status)) + "\n\n" + details +
+		menu(m.codeChoices(), m.codeCursor, m.height) + "\n" +
+		lipgloss.NewStyle().Width(panel).Foreground(welcomeMuted).Render("↑↓ Choose · Enter Select · Esc Back · Ctrl+C Quit")
+	return m.welcomeCanvas(body)
 }

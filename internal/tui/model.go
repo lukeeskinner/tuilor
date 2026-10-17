@@ -3,12 +3,14 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/lukeeskinner/tuilor/internal/codeapp"
 )
 
@@ -22,6 +24,7 @@ type Model struct {
 	appsDir                           string
 	choices                           []string
 	cursor, appCursor                 int
+	introFrame                        int
 	screen                            string
 	files                             []string
 	fileLabels                        []string
@@ -39,13 +42,22 @@ type loadedAppMsg struct {
 }
 
 func NewModel(appsDir string) Model {
+	screen := "boot"
+	if os.Getenv("TUILOR_REDUCED_MOTION") == "1" || os.Getenv("TERM") == "dumb" {
+		screen = "home"
+	}
 	return Model{appsDir: appsDir,
 		choices: []string{"My Apps", "Create App", "MCP servers", "Settings"},
-		screen:  "home", width: 80, height: 24,
+		screen:  screen, width: 80, height: 24,
 	}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.screen == "boot" {
+		return introTick()
+	}
+	return nil
+}
 
 // Close waits for the pending operation's cleanup after external cancellation
 // or a terminal error. The CLI calls it on the final model returned by Bubble Tea.
@@ -64,6 +76,16 @@ func (m Model) Close() error {
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case introTickMsg:
+		if m.screen != "boot" {
+			return m, nil
+		}
+		m.introFrame++
+		if m.introFrame >= 8 {
+			m.screen = "home"
+			return m, nil
+		}
+		return m, introTick()
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
 		if m.creator != nil {
@@ -121,6 +143,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitting {
 			return m, nil
 		}
+		if m.screen == "boot" {
+			m.screen = "home"
+			return m, nil
+		}
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
@@ -167,7 +193,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.creator.resize(m.width, m.height)
 					m.screen = "create"
-					return m, m.creator.prompt.Focus()
+					return m, m.creator.focus()
 				}
 			}
 		case "apps":
@@ -207,8 +233,10 @@ func (m Model) View() string {
 		return "Stopping current operation…\n"
 	}
 	switch m.screen {
+	case "boot":
+		return m.bootView()
 	case "home":
-		return "Welcome to Tuilor!\n\n" + menu(m.choices, m.cursor, m.height) + "\n↑↓ Navigate • Enter Select • q Quit\n"
+		return m.homeView()
 	case "apps":
 		body := menu(m.fileLabels, m.appCursor, m.height)
 		if len(m.files) == 0 && m.err == nil {
@@ -221,18 +249,12 @@ func (m Model) View() string {
 			body += "\n" + escapeControls(m.err.Error()) + "\n"
 		}
 		return "My Apps\n\n" + body + "\n↑↓ Navigate • Enter Open • Esc Back • q Quit\n"
-	case "codegenerating":
-		return "Checking Go and generating application source…\n\nOpenAI request is billable. Esc Cancel · Ctrl+C Quit\n"
-	case "codebuilding":
-		return "Preparing dependencies and compiling app…\n\nA successful build opens automatically. Esc Cancel · Ctrl+C Quit\n"
-	case "codecancel":
-		return "Canceling operation and waiting for cleanup…\n"
+	case "codegenerating", "codebuilding", "codecancel", "saving":
+		return m.generationView()
 	case "codereview":
 		return m.codeView()
 	case "create":
-		return m.creator.View(m.width, m.height)
-	case "saving":
-		return "Saving app…\n"
+		return m.welcomeCanvas(m.creator.View(m.width, m.height))
 	case "loading":
 		return "Opening app project…\n\nEsc Cancel • Ctrl+C Quit\n"
 	default:
@@ -249,7 +271,11 @@ func menu(items []string, cursor, height int) string {
 		if i == cursor {
 			prefix = "> "
 		}
-		fmt.Fprintf(&output, "%s%s\n", prefix, escapeControls(items[i]))
+		label := prefix + escapeControls(items[i])
+		if i == cursor {
+			label = lipgloss.NewStyle().Foreground(welcomeMint).Bold(true).Render(label)
+		}
+		fmt.Fprintln(&output, label)
 	}
 	return output.String()
 }

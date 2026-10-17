@@ -32,7 +32,7 @@ func NewRootCommand() *cobra.Command {
 			current := tui.NewModel(appsDir).WithWorkspace(workspace)
 			for {
 				model, err := tea.NewProgram(current,
-					tea.WithContext(ctx), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()),
+					tea.WithAltScreen(), tea.WithContext(ctx), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()),
 				).Run()
 				final, ok := model.(tui.Model)
 				if !ok {

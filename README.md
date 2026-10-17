@@ -36,6 +36,17 @@ echo
 5. Choose **Save**, **Run Again**, or **Discard**. Save retains source and trial data.
 6. After saving, Esc opens My Apps with the new app selected.
 
+Startup shows a brief animated wordmark, then the colorful home menu. Press any
+key to skip the intro. Small terminals get a compact layout; light and dark
+terminal backgrounds have matching palettes. Use `TUILOR_REDUCED_MOTION=1` to
+skip startup animation, or `NO_COLOR=1` to disable color. The intro makes no AI
+requests or server connections and does not replay after exiting an app.
+
+Create App uses a centered multiline brief editor with the current model, billing
+notice, execution notice, and shortcuts kept visible. Compact terminals use a
+smaller layout. Generation, compilation, cancellation, saving, and review share
+the same studio palette; progress labels reflect the actual operation.
+
 Generated code runs with your OS permissions. It is **not sandboxed**. Only
 request and run apps you trust. Tuilor removes OpenAI credentials and Tuilor AI
 configuration from compiler and app environments; this does not prevent programs
