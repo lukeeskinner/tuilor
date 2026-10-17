@@ -1,5 +1,8 @@
 # ADR 0002: Preview saved apps through My Apps after capability validation
 
+> Historical decision: legacy JSON compatibility and generation are retired by
+> [ADR 0007](0007-go-only-apps.md). Current app generation uses Go projects.
+
 - Date: 2026-10-15
 - Status: Accepted by the user in the interactive-preview implementation plan
 

@@ -1,0 +1,8 @@
+{
+  "kind": "go",
+  "version": 1,
+  "app": {"name": "Todo (Go)", "dependencies": []},
+  "go_version": "",
+  "build_key": "",
+  "binary_hash": ""
+}

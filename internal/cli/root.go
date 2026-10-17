@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -14,26 +15,45 @@ import (
 )
 
 func NewRootCommand() *cobra.Command {
-	var server, appsDir string
+	var appsDir string
 	root := &cobra.Command{
 		Use:           "tuilor",
 		Short:         "Build terminal applications with AI and MCP",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
 			ctx, cancel := context.WithCancel(cmd.Context())
 			defer cancel()
-			model, err := tea.NewProgram(tui.NewModel(appsDir, server),
-				tea.WithContext(ctx), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()),
-			).Run()
-			if final, ok := model.(tui.Model); ok {
-				err = errors.Join(err, final.Close())
+			workspace, err := os.MkdirTemp("", "tuilor-session-")
+			if err != nil {
+				return fmt.Errorf("create project workspace: %w", err)
 			}
-			return err
+			defer func() { runErr = errors.Join(runErr, os.RemoveAll(workspace)) }()
+			current := tui.NewModel(appsDir).WithWorkspace(workspace)
+			for {
+				model, err := tea.NewProgram(current,
+					tea.WithContext(ctx), tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout()),
+				).Run()
+				final, ok := model.(tui.Model)
+				if !ok {
+					return err
+				}
+				if err = errors.Join(err, final.Close()); err != nil {
+					return err
+				}
+				project := final.CodeLaunch()
+				if project == nil {
+					return nil
+				}
+				err = project.Run(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				current = final.CodeReturned(err)
+			}
 		},
 	}
-	root.Flags().StringVar(&server, "server", "", "Optional trusted MCP executable for generation and MCP apps")
-	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved app JSON files")
+	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved Go app projects")
 
 	version := &cobra.Command{
 		Use:   "version",

@@ -9,41 +9,37 @@ import (
 	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/lukeeskinner/tuilor/internal/app"
-	"github.com/lukeeskinner/tuilor/internal/localapp"
-	"github.com/lukeeskinner/tuilor/internal/mcpclient"
+	"github.com/lukeeskinner/tuilor/internal/codeapp"
 )
 
 type Model struct {
-	appsDir, server   string
-	choices           []string
-	cursor, appCursor int
-	screen            string
-	files             []string
-	fileLabels        []string
-	localCall         *localInvocation
-	err               error
-	preview           previewModel
-	creator           *creationModel
-	tools             []mcpclient.Tool
-	confirmation      *confirmationModel
-	call              *invocation
-	width, height     int
-	cancel            context.CancelFunc
-	done              chan struct{}
-	loading, quitting bool
+	workspace                         string
+	codeProject                       *codeapp.Project
+	codeSpec                          *codeapp.Spec
+	codeError, codePrompt, codeReturn string
+	codeCursor                        int
+	launchCode                        bool
+	appsDir                           string
+	choices                           []string
+	cursor, appCursor                 int
+	screen                            string
+	files                             []string
+	fileLabels                        []string
+	err                               error
+	creator                           *creationModel
+	width, height                     int
+	cancel                            context.CancelFunc
+	done                              chan struct{}
+	loading, quitting                 bool
 }
 
 type loadedAppMsg struct {
-	local      *localapp.Store
-	definition *app.Definition
-	err        error
-	tools      []mcpclient.Tool
+	code *codeapp.Project
+	err  error
 }
 
-func NewModel(appsDir, server string) Model {
-	return Model{
-		appsDir: appsDir, server: server,
+func NewModel(appsDir string) Model {
+	return Model{appsDir: appsDir,
 		choices: []string{"My Apps", "Create App", "MCP servers", "Settings"},
 		screen:  "home", width: 80, height: 24,
 	}
@@ -73,38 +69,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.creator != nil {
 			m.creator.resize(m.width, m.height)
 		}
-		if m.confirmation != nil {
-			m.confirmation.resize(m.width, m.height)
-		}
-		if m.preview.definition != nil {
-			var cmd tea.Cmd
-			m.preview, cmd = m.preview.Update(msg)
-			return m, cmd
-		}
-	case generatedAppMsg:
-		return m.generationResult(msg)
-	case changedLocalMsg:
-		return m.localResult(msg)
-	case savedAppMsg:
-		return m.saveResult(msg)
-	case calledToolMsg:
+	case codePreparedMsg:
+		return m.codePrepared(msg)
+	case codeBuiltMsg:
+		return m.codeBuilt(msg)
+	case codeSavedMsg:
 		m.loading, m.cancel, m.done = false, nil, nil
 		if m.quitting {
 			return m, tea.Quit
 		}
-		text := "Result: " + msg.result.Text
-		if msg.result.IsError {
-			text = "Tool error: " + msg.result.Text
-		}
+		m.screen = "codereview"
+		m.codeCursor = 0
 		if msg.err != nil {
-			if msg.result.Text == "" {
-				text = ""
-			}
-			text += "\nError: " + msg.err.Error()
+			m.codeError = "Save failed: " + msg.err.Error()
+		} else {
+			m.codeProject = msg.project
+			m.codeError = ""
 		}
-		m.preview.showResult(*m.call, strings.TrimSpace(text))
-		m.call, m.screen = nil, "preview"
-		return m, m.preview.focusInput()
+		return m, nil
 	case loadedAppMsg:
 		m.loading, m.cancel, m.done = false, nil, nil
 		if m.quitting {
@@ -113,22 +95,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen != "loading" {
 			return m, nil
 		} // Esc already left this request.
-		m.err, m.screen = msg.err, "apps"
-		if msg.err == nil {
-			m.tools = msg.tools
-			m.screen = "preview"
-			var cmd tea.Cmd
-			m.preview, cmd = newPreview(msg.definition, m.width, m.height)
-			if msg.local != nil {
-				m.preview.local = msg.local
-				m.preview.savedPath = msg.local.Path
-				m.preview.renderContent(true)
+		if msg.code != nil && msg.err == nil {
+			m.codeProject = msg.code
+			spec := msg.code.Spec
+			m.codeSpec = &spec
+			m.codePrompt = "Build " + spec.Name + "; preserve the existing app behavior and data."
+			m.codeError = ""
+			if msg.code.Ready() {
+				m.launchCode = true
+				return m, tea.Quit
 			}
-			return m, cmd
+			return m.beginCodeBuild(msg.code, codeapp.Toolchain{})
 		}
+		m.err, m.screen = msg.err, "apps"
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.preview.definition == nil && m.screen != "create" && m.screen != "generating" && m.screen != "cancelgeneration") {
+		if key == "ctrl+c" || (key == "q" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -142,65 +124,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
+			case "codereview":
+				return m.leaveCode()
+			case "codegenerating", "codebuilding", "codecancel":
+				m.cancel()
+				m.screen = "codecancel"
 			case "saving":
 				return m, nil
-			case "generating", "cancelgeneration":
-				m.cancel()
-				m.screen = "cancelgeneration"
 			case "create":
 				m.creator.prompt.Blur()
 				m.screen = "home"
-			case "localdelete":
-				m.localCall = nil
-				m.screen = "preview"
-				return m, m.preview.focusInput()
-			case "confirm":
-				m.confirmation, m.screen = nil, "preview"
-				return m, m.preview.focusInput()
-			case "calling", "canceling":
-				m.cancel()
-				m.screen = "canceling"
 			case "loading":
 				m.cancel()
 				m.screen = "apps"
-			case "preview":
-				if m.preview.draft {
-					m.preview, m.tools, m.screen = previewModel{}, nil, "create"
-					m.creator.message = "Unsaved app discarded. Your prompt is preserved."
-					m.creator.resize(m.width, m.height)
-					return m, m.creator.prompt.Focus()
-				}
-				m.returnToLibrary(m.preview.savedPath)
 			default:
 				m.screen = "home"
 			}
 			return m, nil
 		}
 		switch m.screen {
+		case "codereview":
+			return m.codeReviewKey(key)
 		case "create":
 			if key == "ctrl+g" {
 				return m.beginGeneration()
-			}
-		case "preview":
-			if key == "ctrl+s" {
-				return m.saveDraft()
-			}
-			if m.preview.local != nil && (key == "enter" || key == " " || key == "delete") {
-				return m.requestLocal(msg)
-			}
-			if key == "enter" {
-				return m.requestSubmission()
-			}
-		case "localdelete":
-			if key == "y" && m.width >= 30 && m.height >= 6 {
-				return m.startLocal(*m.localCall)
-			}
-		case "confirm":
-			if key == "y" && m.width >= 30 && m.height >= 6 {
-				return m.startCall()
-			}
-			if key == "pgup" || key == "pgdown" {
-				m.confirmation.view, _ = m.confirmation.view.Update(msg)
 			}
 		case "home":
 			switch key {
@@ -237,11 +184,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				m.cancel, m.done = cancel, make(chan struct{})
 				m.screen, m.loading, m.err = "loading", true, nil
-				path, server, done := filepath.Join(m.appsDir, m.files[m.appCursor]), m.server, m.done
+				path, done := filepath.Join(m.appsDir, m.files[m.appCursor]), m.done
 				return m, func() tea.Msg {
 					defer close(done)
 					defer cancel()
-					return loadApp(ctx, path, server)
+					return loadApp(ctx, path)
 				}
 			}
 		}
@@ -251,11 +198,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.creator.prompt, cmd = m.creator.prompt.Update(msg)
 		return m, cmd
 	}
-	if m.screen == "preview" {
-		var cmd tea.Cmd
-		m.preview, cmd = m.preview.Update(msg)
-		return m, cmd
-	}
+
 	return m, nil
 }
 
@@ -272,32 +215,26 @@ func (m Model) View() string {
 			body = "No saved apps. Choose Create App on the home screen.\n"
 		}
 		if m.loading {
-			body += "Stopping previous validation…\n"
+			body += "Stopping previous app load…\n"
 		}
 		if m.err != nil {
 			body += "\n" + escapeControls(m.err.Error()) + "\n"
 		}
 		return "My Apps\n\n" + body + "\n↑↓ Navigate • Enter Open • Esc Back • q Quit\n"
+	case "codegenerating":
+		return "Checking Go and generating application source…\n\nOpenAI request is billable. Esc Cancel · Ctrl+C Quit\n"
+	case "codebuilding":
+		return "Preparing dependencies and compiling app…\n\nA successful build opens automatically. Esc Cancel · Ctrl+C Quit\n"
+	case "codecancel":
+		return "Canceling operation and waiting for cleanup…\n"
+	case "codereview":
+		return m.codeView()
 	case "create":
-		return m.creator.View(m.server, m.width, m.height)
-	case "generating":
-		return "Generating app with OpenAI…\n\nEsc Cancel • Ctrl+C Quit\n"
-	case "cancelgeneration":
-		return "Canceling generation…\n\nYour prompt will be preserved.\n"
+		return m.creator.View(m.width, m.height)
 	case "saving":
 		return "Saving app…\n"
 	case "loading":
-		return "Opening and validating app…\n\nEsc Cancel • Ctrl+C Quit\n"
-	case "preview":
-		return m.preview.View()
-	case "localdelete":
-		return m.localDeleteView()
-	case "confirm":
-		return m.confirmation.View()
-	case "calling":
-		return "Running MCP tool…\n\nEsc Cancel call • Ctrl+C Quit\n"
-	case "canceling":
-		return "Canceling MCP call and closing connection…\n\nThe tool may already have run.\n"
+		return "Opening app project…\n\nEsc Cancel • Ctrl+C Quit\n"
 	default:
 		return "◆ TUILOR\n\n" + m.screen + "\n\nComing soon...\n\nEsc Back • q Quit\n"
 	}

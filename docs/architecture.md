@@ -1,229 +1,131 @@
 # Tuilor architecture
 
-Status: implemented local app generation, persistent collections, and MCP apps, 2026-10-16.
+Status: Go-only apps with automatic launch and standalone MCP discovery, 2026-10-16.
 [ADR 0001](adr/0001-initial-architecture.md) records the local-first modular Go
 direction. [ADR 0002](adr/0002-app-preview.md) records the preview design;
 [ADR 0003](adr/0003-form-execution.md) extends it with form execution;
 [ADR 0004](adr/0004-home-generation.md) adds prompt, review, and explicit saving;
 [ADR 0005](adr/0005-local-apps.md) adds local collections and persistent app bundles.
+[ADR 0006](adr/0006-generated-go-apps.md) supersedes renderer expansion for new local
+apps with source generation, compilation, and automatic launch.
+[ADR 0007](adr/0007-go-only-apps.md) removes the legacy runtime and upgrades the default model.
 
-## Boundaries and data flow
-
-Tuilor is one Go application with local filesystem storage. It preserves the
-Cobra CLI, Bubble Tea home screen, and official MCP Go SDK integration. Generated
-JSON is an intermediate representation shared by generation and display. Routine
-preview interactions require no LLM.
+## Generated Go app flow
 
 ```text
-Local creation (no server):
-request -> OpenAI structured outcome -> app.Parse v2 -> unsaved renderer + records
--> Ctrl+S -> publish app directory -> My Apps
-
-MCP creation (--server):
-request + discovered schemas -> close MCP -> OpenAI -> app.Parse v1 -> renderer/file
-
-Open:
-My Apps -> local bundle -> validate definition + records -> renderer
-        -> legacy JSON -> discover tools and close -> app.Parse v1 -> renderer
-
-Local action:
-form inputs / selected ID -> validate -> candidate records -> atomic data write
--> replace displayed snapshot (deletion requires confirmation first)
-
-Submit:
-bound values -> validate -> confirm exact call -> fresh connection -> rediscover
--> validate current arguments -> tools/call once -> close -> display result
+Create App -> credentials + Go preflight -> AI source envelope
+-> project source validation -> prepare dependencies -> compile -> CLI launches app
+-> child exits -> resume Tuilor -> Save / Run Again / Discard
+My Apps -> source project -> valid cached binary OR bounded rebuild -> CLI launch
 ```
 
-| Package | Responsibility |
-| --- | --- |
-| `internal/cli` | Parse commands and flags; configure and run the TUI |
-| `internal/mcpclient` | Own one stdio connection, discover tools, validate argument values, call once when authorized, close and reap the direct child |
-| `internal/app` | Define JSON, validate structure and capability bindings, save new files |
-| `internal/localapp` | Own local records, IDs, immutable change snapshots, bundle loading, and atomic persistence |
-| `internal/generator` | Construct AI input and isolate the OpenAI Responses implementation |
-| `internal/tui` | Own menus, creation prompt, operation state, unsaved review, save status, preview inputs, focus, pages, and viewport |
+The concrete code-app package owns Spec, Project, toolchain preflight, source and
+module validation, compilation, caching, publication, and subprocess launch. The
+existing generator provider supplies source through Responses Structured Outputs;
+JSON is a transport envelope here, not the runtime UI language. Code output has a
+16,384-token budget. The default model is gpt-6.1-sol; TUILOR_MODEL overrides it,
+and Create App shows the selected model. The existing Go SDK accepts the model
+ID as a string and uses the same Responses/strict JSON Schema request. No model
+fallback or billable retry is implicit.
 
-The generator's narrow provider interface supports AI substitution. The preview
-uses concrete models; no component registry, storage service, runtime framework,
-or speculative interfaces have been added.
+The AI writes app.go and newModel() (tea.Model, error), while the host owns main.go,
+module scaffolding, executable paths, and a manifest. The starter wraps the model
+to deliver resize messages, reserve an exit footer, clip overflow, and handle Esc
+and Ctrl+C. The generated model owns layout and behavior. It receives local JSON
+load/save helpers which preserve malformed data and use atomic replacement. This
+is a starter convention, not an enforcement boundary against arbitrary Go code.
 
-## Application definitions
+Generation/preflight has a 90-second context; compilation and dependency resolution
+have a fresh 120-second context. No context is stored in a model struct. Only one
+operation runs at a time. Cancellation waits for cleanup and suppresses automatic
+launch. Failures retain source and prompt. An explicit repair sends the prior
+source and bounded diagnostics as data in one new paid request; never retry
+implicitly. Go 1.25.5+ must be installed; Tuilor does not install toolchains.
 
-Version 1 supports one or more pages, text, forms, text inputs, and one MCP action
-per form. Bindings map tool parameter names to field IDs in the same form. Tool
-input schemas must be objects with direct string properties; unsupported schema
-features fail closed.
+The parent Bubble Tea program finishes before launch, restoring the terminal.
+The CLI owns the child lifetime and terminal stdio, then resumes the retained
+TUI model after success or failure. On Unix, forward resize signals received by
+Tuilor to the child. Cancellation kills and reaps the direct child with bounded
+I/O shutdown; arbitrary descendant trees are outside the guarantee. The launch
+context is independent of generation/build deadlines. Cleanup of the entire
+private session workspace belongs to the CLI, including cancellation and errors.
 
-Version 2 adds named collections with text and boolean fields. Local forms insert
-records through explicit input bindings; lists bind a text label and optional
-boolean indicator. Each list can offer one literal update and one delete action
-for the selected record. Text values must be nonblank; booleans default false on
-insertion. Record IDs come from the runtime, so duplicate titles stay independent.
-Collections, fields, components, actions, and references are validated before
-rendering. Mixed local/MCP definitions are deferred.
+Pinned UI dependencies are Bubble Tea 1.3.10, Bubbles 1.0.0, and Lip Gloss 1.1.0.
+Other dependencies must be explicitly requested and declared with exact versions.
+Check module syntax and source imports before invoking Go tooling. Build with
+cgo disabled, a local toolchain, no workspace, and no inherited Go build flags.
+Commands use separate argv values; source never chooses filenames or executables.
 
-The local schema has separate insert, update, and delete action shapes. Insert
-forms cannot assign literal values; update/delete cannot bind form inputs, and
-delete cannot assign values. These rules constrain generation itself as well as
-local parsing. Reference and type relationships still require semantic validation.
+A code manifest has kind go and format version 1, app name/dependencies, toolchain
+version, build fingerprint, and binary hash. Source is stored only in app.go.
+Fingerprints cover source, starter, module files, declared dependencies, platform,
+and build Go version. Cache checks detect stale/changed artifacts, not malicious
+projects. Cached apps run without Go or an API key; rebuilds need Go and may need
+network access for declared pinned modules. New saves stage and rename a complete
+private directory containing source, starter, modules, trial data, and the binary.
+Save is idempotent. Failed saves retain the candidate; Discard removes the draft.
+My Apps lists only Go project directories containing a regular manifest.json.
+Flat JSON apps and old app.json bundles are ignored; their files are not deleted.
 
-The same JSON Schema constrains Structured Outputs and local structural
-validation. Local semantic checks additionally enforce supported components,
-unique IDs, actual discovered tool names, binding targets, and required tool
-parameters. Matching the JSON shape alone is insufficient to establish these
-relationships. The definition grants no execution permissions.
+Source instructions require one final Go file, the pinned widget API signatures,
+and exported JSON data fields. A small complete compiling app is included as
+reference context for widget updates, transactional saving, scrolling, and resize
+handling. The model receives the host helper signatures and lifecycle contract,
+not the full main.go implementation; only one complete Go example is included. It is an example to adapt, not a fixed app or component interpreter. Structured Outputs validates the transport shape,
+not Go correctness; malformed or uncompilable source remains blocked, with repair
+requiring an explicit action. No source fragments are silently selected or merged.
 
-The official OpenAI Go SDK v3.74.0 is pinned for Go 1.25 compatibility. Generation
-reads `OPENAI_API_KEY`, supports `TUILOR_MODEL`, and defaults to `gpt-4.1-mini`.
-The OpenAI implementation receives metadata as data, with no callable tools. It
-rejects failed, incomplete, refused, and invalid outputs before saving.
+Generated programs run with full user OS privileges. Creation explicitly states
+that Generate compiles and runs AI-written code. Compiler and app environments
+omit OpenAI credentials and Tuilor AI settings. This is not a sandbox; static
+checks and compilation cannot establish application safety or correctness.
+No new MCP integration inside generated programs is implemented in this milestone.
 
-## Preview ownership and lifecycle
+## CLI generation
 
-Root flags `--apps-dir` (default `apps`) and `--server` configure the home screen.
-My Apps lists top-level JSON files and local app directories in filename order,
-showing app names with filenames. Hidden staging entries and symlinks are excluded.
-Local opening validates app.json and data.json without launching a process. MCP
-opening requires the explicitly selected server. Running saved apps requires no
-API key.
+CLI create uses the same provider and GenerateCode as the home screen. It checks
+credentials and Go before a paid request, prepares a private temporary project,
+compiles it under a fresh 120-second context, and publishes it through Project.Save.
+It prints the saved directory on stdout and the model/trust notice on stderr.
+It saves without launching; My Apps opens the project later. --output-dir and
+--timeout remain available; --server is removed from both root and create.
+Generation failure, build failure, and cancellation never publish an app.
 
-The parent TUI model owns one background operation at a time. A Bubble Tea command
-opens a selected local bundle, or reads legacy JSON and discovers MCP tools under
-a 10-second context before validation. Discovery closes its MCP connection
-before returning.
-No server session remains open during preview.
+## Package boundaries
 
-Esc cancels loading and returns to the library. Opening another file remains
-blocked until the previous request finishes cleanup, so stale results cannot
-replace a newer preview. Completion after navigation is ignored. Ctrl+C cancels
-an active request and waits for its completion. On external cancellation or a
-terminal failure, the CLI calls Close on the returned model, with a five-second
-cleanup wait. The SDK owns process reaping; Tuilor never calls Wait itself.
-Contexts belong to individual operations and are not stored in model structs.
+- internal/generator: provider request contract, OpenAI Responses implementation,
+  structured source generation, and explicit repair input.
+- internal/codeapp: host starter, source/import validation, project metadata,
+  compilation, cache validation, atomic publication, data copying, child launch.
+- internal/tui: prompt editing, asynchronous generation/build/save lifecycle,
+  project library, review, and terminal handoff requests.
+- internal/cli: Cobra commands, session workspace ownership, terminal handoff,
+  child lifetime, and standalone MCP tool discovery.
+- internal/mcpclient: explicit local server connection and paginated tool/schema
+  discovery using the official SDK. No tool-call entry point is exposed.
 
-The concrete preview model owns text inputs separately from the definition.
-Inputs and results are scoped by page and form position, retain values across
-page switches, and reset on leaving an app. Bubbles textinput handles editing; Bubbles viewport
-handles scrolling. Resizing adjusts wrapping and field widths, and focus changes
-scroll the active field or Submit button into view. Very small terminals show a resize prompt.
+The former internal/app and internal/localapp packages, JSON generation prompts,
+component renderer, collection mutations, and MCP form execution are removed.
+This leaves one app creation/runtime path instead of parallel Go and JSON stacks.
+Future UI behavior is generated Go; no generic component framework is needed.
 
-## Prompt, generation, and saving
+## JSON still used for transport and storage
 
-A concrete creation model owns the Bubbles textarea and inline errors. Enter adds
-a newline, `q` is ordinary text, and Ctrl+G starts generation. Empty requests
-and missing credentials are rejected before any generation. A server is optional;
-its presence selects the existing MCP generation mode. Configuration comes from
-existing startup flags and environment variables.
+Responses Structured Outputs transports the name, source, pinned dependencies,
+or an unsupported explanation. A manifest identifies a Go project and its cache.
+Generated apps use JSON data through the starter's local persistence helpers.
+None of these JSON uses defines terminal components or interprets UI behavior.
+Saved legacy files are not migrated, opened, or overwritten.
 
-The root runs generation and validation in one asynchronous command with a
-90-second context. MCP mode includes discovery; ListTools closes its session
-before contacting OpenAI. Local mode sends the request and local definition schema
-with no MCP connection. Its strict result envelope contains success with an app or
-unsupported with a reason. Validate the envelope, then validate successful app JSON.
-The model decides request suitability; semantic validation enforces capabilities,
-not an understanding of user intent. Esc cancels and waits for cleanup before
-restoring the
-original prompt; even a successful result arriving during cancellation is ignored.
-Ctrl+C cancels and waits before quitting. There is no automatic retry or concurrent
-generation. Prompt content remains in memory when navigating away and back.
+## Verification
 
-A valid candidate uses the existing renderer. A draft flag adds the unsaved
-indicator. Esc discards the candidate and its local records and restores the
-prompt. Ctrl+S saves once; failure retains the complete draft. Local saves include
-records added during review, while MCP saves contain only the definition.
-Successful saving keeps the app open, displays the path, and selects that entry
-when Esc refreshes My Apps. CLI create saves automatically in either mode.
-
-Local forms insert immediately; Space runs the focused list's update action, and
-Delete asks permission for the selected record. Enter cannot authorize deletion.
-Up/Down change selection and Tab/Shift+Tab move focus between lists, fields, and
-buttons. These shortcuts do not intercept text editing in fields. Results and
-record changes need no AI request.
-
-## Local storage and write ownership
-
-The concrete local-app package separates record behavior from UI handling. Its
-store keeps the definition, data, and optional saved path; Apply returns a new
-snapshot after type/reference validation and successful persistence. The UI only
-replaces its current store on success. Failed changes preserve inputs, displayed
-records, and previous persisted data.
-
-New apps are private directories containing app.json and data.json. Save writes
-both in a hidden staging directory and renames the directory into the library.
-The runtime chooses names using random IDs; definitions cannot choose paths.
-Subsequent changes write a private temporary data file, sync and close it, then
-atomically replace data.json. The root serializes writes and waits before leaving
-or quitting; cancellation cannot undo a completed filesystem write.
-
-Opening requires valid definitions and complete, typed records with unique IDs.
-Missing, malformed, or unsupported data is reported and left untouched. Keep the
-two files together when moving an app. Atomic replacement prevents partial JSON
-writes, but is not a multi-process transaction or full power-loss durability
-protocol. One running editor per app is supported; concurrent changes are not merged.
-
-## Form execution and permission boundary
-
-Enter on a field or Submit button constructs an immutable argument snapshot for
-that form. The current discovery snapshot validates those values first. The TUI
-then shows a scrollable confirmation containing the selected executable, exact
-tool name, and JSON arguments. Only a literal `y` on that screen authorizes one
-call. Enter does not approve; Esc declines. Inputs cannot change during review.
-No permission is persisted or granted by the app definition or tool annotations.
-
-After approval, a new 10-second operation connects to the explicitly chosen
-server, rediscovers the tool, and validates the approved argument snapshot against
-its current schema on that same session. Unknown parameters, missing tools,
-required arguments, and string constraints can block the call. Schema resolution
-has no remote loader. No default arguments are inserted. The MCP client sends
-one tools/call request and closes its session; it does not reconnect or retry.
-This supports one-shot tools rather than persistent server-side session state.
-
-The UI blocks concurrent submissions. Esc during execution requests cancellation
-and waits for cleanup; Ctrl+C also waits before quitting. Errors after dispatch
-report that effects may already have occurred. A successful result is retained
-even if subsequent session cleanup reports an error. Text or structured JSON is
-displayed under the originating form. Tool-reported errors are labeled separately
-from protocol failures. Non-text content is summarized, with no resource fetching,
-and displayed output is capped at 64 KiB. Additional tool interaction is unsupported
-and never triggers an automatic retry. The runtime has no AI dependency.
-
-## Trust boundaries and current limits
-
-- The user chooses a trusted executable through a startup flag. It is launched
-  directly, with no shell interpolation. Discovery is not an OS sandbox.
-- File contents and MCP metadata are untrusted. Saved apps pass structural and
-  capability validation before rendering; displayed control characters are escaped.
-- Generation and opening an app never call MCP tools. Runtime execution requires
-  the user's confirmation of each exact tool and argument snapshot.
-- Discovery is a snapshot. Submissions rediscover capabilities and validate actual
-  values, but cannot prevent the trusted server changing behavior after validation.
-- Local record changes persist; MCP input values and results do not. There is no
-  app editor, schema migration, marketplace, workflow engine, or multi-server runtime.
-- Cleanup covers directly launched child processes; arbitrary descendant process
-  trees are outside the current guarantee.
-
-## Verification and next milestone
-
-No automated test files are retained, following the user's explicit preference.
-Build and vet checks accompany manual terminal verification: saved greeting,
-multiple pages and forms, focus, scrolling, resize, edit reset, malformed JSON,
-unsupported definitions, missing configuration, startup failure, empty libraries,
-cancellation, deadline handling, and direct-child cleanup. Execution checks use a
-temporary local protocol fixture to inspect exact calls and arguments: declining
-permission, duplicate key presses, fresh approval and connection per call, invalid
-values, changed schemas, missing tools, tool/protocol errors, zero-input forms,
-structured results, escaped controls, cancellation, timeout, and quitting during
-a call. Home-screen creation checks use a temporary HTTP Responses fixture and
-MCP executable: multiline editing, literal q, resize, discovery closure before AI,
-invalid output, API/startup errors, preflight checks, cancellation, late results,
-the actual 90-second deadline, prompt preservation, draft execution, save failure
-and retry, duplicate-save prevention, and reopening. They use a dummy key with
-localhost responses; no billable request is needed. Local checks additionally cover
-unsaved CRUD, text/boolean bindings, duplicate titles, stable IDs, deletion
-confirmation, private bundle publication, carrying draft records into saves,
-failed-write rollback and retry, corrupted data preservation, CLI local creation,
-and reopening after restart without an API key or MCP launch.
-
-Future extensions such as persistent sessions, session-wide grants, retries,
-workflows, and non-text rendering require separate design decisions.
+Use temporary local HTTP/MCP fixtures and real Go builds without API charges.
+Verify model default/override wiring, Go-only listing, generation and explicit
+repair, compilation failure, cancellation, save/reopen, data persistence, and
+MCP discovery. Keep repository test files absent by user preference. Run go fmt,
+go build, go test, go test -race, go vet, and diff checks. Paid generation remains
+an explicit user-authorized action; fixture success does not establish model quality.
+The 2026-10-16 reliability check used real generation/repair requests after user
+authorization. After simplifying context, two fresh notes generations compiled;
+one ran through Create App, automatic opening, saving, and reopening. This is a
+small smoke check, not a guarantee for arbitrary prompts. See [ADR 0008](adr/0008-generation-source-context.md).

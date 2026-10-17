@@ -1,5 +1,8 @@
 # ADR 0003: Confirm each form call and use a fresh MCP connection
 
+> Historical decision: legacy JSON compatibility and generation are retired by
+> [ADR 0007](0007-go-only-apps.md). Current app generation uses Go projects.
+
 - Date: 2026-10-15
 - Status: Accepted by the user before implementation
 - Extends: ADR 0002's rendering-only milestone

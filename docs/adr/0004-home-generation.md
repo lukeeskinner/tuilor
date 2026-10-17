@@ -1,5 +1,8 @@
 # ADR 0004: Generate candidates in the home screen and save after review
 
+> Historical decision: legacy JSON compatibility and generation are retired by
+> [ADR 0007](0007-go-only-apps.md). Current app generation uses Go projects.
+
 - Date: 2026-10-15
 - Status: Accepted by the user before implementation
 

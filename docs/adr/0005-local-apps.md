@@ -1,5 +1,8 @@
 # ADR 0005: Declarative local collections and saved app bundles
 
+> Historical decision: legacy JSON compatibility and generation are retired by
+> [ADR 0007](0007-go-only-apps.md). Current app generation uses Go projects.
+
 - Date: 2026-10-16
 - Status: Accepted by the user before implementation
 

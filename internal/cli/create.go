@@ -2,86 +2,78 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/lukeeskinner/tuilor/internal/app"
+	"github.com/lukeeskinner/tuilor/internal/codeapp"
 	"github.com/lukeeskinner/tuilor/internal/generator"
-	"github.com/lukeeskinner/tuilor/internal/localapp"
-	"github.com/lukeeskinner/tuilor/internal/mcpclient"
 	"github.com/spf13/cobra"
 )
 
 func newCreateCommand() *cobra.Command {
-	var server, directory string
+	var directory string
 	var timeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "create <description>",
-		Short: "Generate and save a local app, or use an explicitly selected MCP server",
+		Short: "Generate, build, and save a Go terminal app",
 		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if strings.TrimSpace(args[0]) == "" || strings.TrimSpace(directory) == "" || (cmd.Flags().Changed("server") && strings.TrimSpace(server) == "") {
-				return fmt.Errorf("description, --output-dir, and explicitly supplied --server must not be empty")
+		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
+			if strings.TrimSpace(args[0]) == "" || strings.TrimSpace(directory) == "" {
+				return fmt.Errorf("description and --output-dir must not be empty")
 			}
 			if timeout <= 0 {
 				return fmt.Errorf("--timeout must be positive")
 			}
-			// Reject missing credentials before starting any subprocess.
 			provider, err := generator.NewOpenAIFromEnv()
 			if err != nil {
 				return err
 			}
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
-			var definition *app.Definition
-			if server == "" {
-				definition, err = generator.GenerateLocal(ctx, provider, args[0])
-			} else {
-				tools, err := mcpclient.ListTools(ctx, server)
-				if err != nil {
-					return err
-				}
-				capabilities := make([]app.Capability, 0, len(tools))
-				for _, tool := range tools {
-					capabilities = append(capabilities, app.Capability{
-						Name: tool.Name, Description: tool.Description, InputSchema: tool.InputSchema,
-					})
-				}
-				definition, err = generator.Generate(ctx, provider, args[0], capabilities)
-				if err != nil {
-					return err
-				}
+			tool, err := codeapp.Preflight(ctx)
+			if err != nil {
+				return err
 			}
+			// Explain the trust boundary before the paid generation request. Opening the
+			// saved app later runs its Go code with the user's OS permissions.
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "Generating Go with %s (billable OpenAI request). Generated apps run with your OS permissions, without a sandbox.\n", EscapeTerminalControls(generator.ConfiguredModel())); err != nil {
+				return err
+			}
+			spec, err := generator.GenerateCode(ctx, provider, args[0], nil, "")
+			if err != nil {
+				return err
+			}
+			workspace, err := os.MkdirTemp("", "tuilor-create-")
+			if err != nil {
+				return fmt.Errorf("create project workspace: %w", err)
+			}
+			defer func() { runErr = errors.Join(runErr, os.RemoveAll(workspace)) }()
+			project, err := codeapp.Create(ctx, filepath.Join(workspace, "project"), spec)
 			if err != nil {
 				return err
 			}
 			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("save generated app: %w", err)
+				return err
 			}
-			var path string
-			if definition.Version == 2 {
-				store, newErr := localapp.New(definition)
-				if newErr != nil {
-					return newErr
-				}
-				saved, saveErr := store.Save(directory)
-				if saveErr != nil {
-					return saveErr
-				}
-				path = saved.Path
-			} else {
-				path, err = app.Save(definition, directory)
+			cancel()
+			buildCtx, cancelBuild := context.WithTimeout(cmd.Context(), 120*time.Second)
+			defer cancelBuild()
+			if err := project.Build(buildCtx, tool); err != nil {
+				return err
 			}
+			saved, err := project.Save(buildCtx, directory)
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), EscapeTerminalControls(path))
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), EscapeTerminalControls(saved.Dir))
 			return err
 		},
 	}
-	cmd.Flags().StringVar(&server, "server", "", "Trusted local MCP executable (launched directly, without a shell)")
-	cmd.Flags().StringVar(&directory, "output-dir", "apps", "Directory for new generated JSON files")
-	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "Total discovery and generation deadline (cleanup may take longer)")
+	cmd.Flags().StringVar(&directory, "output-dir", "apps", "Directory for saved Go app projects")
+	cmd.Flags().DurationVar(&timeout, "timeout", 90*time.Second, "Generation and Go preflight deadline; building has a separate 120-second deadline")
 	return cmd
 }

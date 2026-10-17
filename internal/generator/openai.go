@@ -13,7 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 )
 
-const DefaultModel = "gpt-4.1-mini"
+const DefaultModel = "gpt-6.1-sol"
 
 type OpenAI struct {
 	client openai.Client
@@ -32,8 +32,16 @@ func NewOpenAI(apiKey, model string, opts ...option.RequestOption) (*OpenAI, err
 	return &OpenAI{client: openai.NewClient(options...), model: model}, nil
 }
 
+// ConfiguredModel is shared by provider construction and the pre-generation UI.
+func ConfiguredModel() string {
+	if model := strings.TrimSpace(os.Getenv("TUILOR_MODEL")); model != "" {
+		return model
+	}
+	return DefaultModel
+}
+
 func NewOpenAIFromEnv() (*OpenAI, error) {
-	return NewOpenAI(os.Getenv("OPENAI_API_KEY"), os.Getenv("TUILOR_MODEL"))
+	return NewOpenAI(os.Getenv("OPENAI_API_KEY"), ConfiguredModel())
 }
 
 // apiError preserves the SDK cause for errors. As without printing response bodies
@@ -47,12 +55,16 @@ func (e *apiError) Error() string { return e.message }
 func (e *apiError) Unwrap() error { return e.cause }
 
 func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) {
+	maxTokens := request.MaxOutputTokens
+	if maxTokens <= 0 {
+		maxTokens = 8192
+	}
 	response, err := p.client.Responses.New(ctx, responses.ResponseNewParams{
 		Model:           shared.ResponsesModel(p.model),
 		Instructions:    openai.String(request.Instructions),
 		Input:           responses.ResponseNewParamsInputUnion{OfString: openai.String(request.Input)},
 		Store:           openai.Bool(false),
-		MaxOutputTokens: openai.Int(8192),
+		MaxOutputTokens: openai.Int(maxTokens),
 		Text: responses.ResponseTextConfigParam{Format: responses.ResponseFormatTextConfigUnionParam{
 			OfJSONSchema: &responses.ResponseFormatTextJSONSchemaConfigParam{
 				Name: "tuilor_app", Schema: request.Schema, Strict: openai.Bool(true),
@@ -88,7 +100,7 @@ func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) 
 	}
 	output := response.OutputText()
 	if strings.TrimSpace(output) == "" {
-		return nil, fmt.Errorf("OpenAI returned no app definition")
+		return nil, fmt.Errorf("OpenAI returned no application source")
 	}
 	return []byte(output), nil
 }
