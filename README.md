@@ -205,17 +205,14 @@ arguments. Existing MCP settings and OAuth behavior remain unchanged.
 ```sh
 go fmt ./...
 go build ./...
-go test ./...
-go test -race ./...
 go vet ./...
 git diff --check
 ```
 
-Repository tests cover source-response validation, explicit repair inputs,
-preflight failures, invalid-source rejection, cancellation, atomic publication,
-credential-environment filtering and saved declarative compatibility. Temporary
-mock-HTTP/PTY fixtures exercise real compilation and terminal handoff without a
-paid API. Live generation and actual app quality remain separate manual checks.
+Repository test files have been removed by user preference. Build and vet checks
+remain, but there is no automated regression coverage. Temporary mock-HTTP/PTY
+fixtures can verify compilation, terminal handoff and persistence without a paid
+API. Live generation and actual app quality require manual checks.
 
 See [architecture](docs/architecture.md), [ADR 0011](docs/adr/0011-custom-go-default.md),
 and [repository instructions](AGENTS.md). ADR 0011 supersedes ADR 0010's choice

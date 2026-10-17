@@ -102,7 +102,7 @@ Executor interface in internal/tui separates the renderer from concrete storage.
 The renderer supports one collection/page, text/list/form/button, and text/boolean/
 choice/date fields. Those limits apply only to saved declarative apps, not new Go
 apps. The unused definition generator, AI schema, draft publication and creation
-screens have been removed. Runtime/storage tests continue to protect saved apps.
+screens have been removed. The saved runtime and storage behavior remain supported.
 
 `internal/localapp` owns saved-bundle loading, validated random record IDs and atomic
 record replacement. Its per-app OS lock prevents competing Tuilor writers.
@@ -191,12 +191,10 @@ approval, and these connections are not yet passed to generation or child apps.
 - internal/connections, internal/mcpclient: optional configuration, OS credentials,
   OAuth and MCP discovery, without a tool-execution bridge.
 
-Repository tests use fake providers and cache fixtures to verify source contracts,
-error/cancellation paths, explicit repair, source rejection, named/idempotent
-publication, saved data and credential filtering. Declarative persistence/runtime
-tests remain. Temporary mock-HTTP/PTY checks use real Go compilation and generated
-executables to verify automatic opening, terminal restoration, save/reopen and
-repair, without paid requests. Build/race/vet complement these checks. Paid model
-quality, arbitrary domain correctness, and visual quality still need real manual
-verification. Next integrations should have explicit credential/permission boundaries;
+Repository test files and their exclusive tracker fixture were subsequently removed
+at the user's request. There is no automated regression coverage. Formatting,
+build and vet checks remain; temporary mock-HTTP/PTY fixtures can check compilation,
+opening, terminal restoration, save/reopen and repair without paid requests.
+Paid model quality, arbitrary domain correctness and visual quality require manual
+verification. Future integrations still need explicit credential/permission boundaries;
 this change does not automatically implement MCP/native service access.

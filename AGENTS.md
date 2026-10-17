@@ -59,17 +59,12 @@ without re-requesting approval; future architectural pivots need an agreed scope
 
 ## Testing and observability
 
-Keep meaningful repository tests independent of paid APIs and real credentials.
-Cover source responses, explicit repair, preflight/build errors, cancellation,
-publication/save failures, data preservation, environment filtering, and terminal
-ownership. Preserve tests for saved declarative validation, CRUD, locking, corrupt
-data, keyboard interaction, and save/reopen. Preserve explicit saved-code consent
-and MCP discovery. Use synchronization rather than arbitrary asynchronous sleeps.
-
-Once a runnable Go module exists, run relevant tests, `go test ./...`,
-`go test -race ./...`, and `go vet ./...` as appropriate. Report what was actually
-verified and any limits. Keep diagnostic output on stderr; never log credentials
-or full environment contents.
+The user has explicitly removed all repository test files, superseding the earlier
+testing preference. Do not add replacement tests unless requested. Use formatting,
+build and vet checks, plus temporary/manual fixtures when needed. Temporary checks
+must avoid paid requests and real credentials unless explicitly authorized. There
+is no automated regression coverage; report what was actually verified and its
+limits. Keep diagnostics on stderr; never log credentials or full environments.
 
 ## Security
 
