@@ -1,0 +1,235 @@
+{
+  "version": 1,
+  "name": "Task Manager",
+  "collection": {
+    "id": "tasks",
+    "name": "Task Manager",
+    "fields": [
+      {
+        "id": "title",
+        "label": "Title",
+        "type": "text",
+        "required": true,
+        "choices": []
+      },
+      {
+        "id": "priority",
+        "label": "Priority",
+        "type": "choice",
+        "required": true,
+        "choices": [
+          "Normal",
+          "High",
+          "Low"
+        ]
+      },
+      {
+        "id": "due",
+        "label": "Due date",
+        "type": "date",
+        "required": false,
+        "choices": []
+      },
+      {
+        "id": "completed",
+        "label": "Completed",
+        "type": "boolean",
+        "required": false,
+        "choices": []
+      }
+    ]
+  },
+  "page": {
+    "id": "main",
+    "title": "Your collection",
+    "components": [
+      {
+        "id": "intro",
+        "type": "text",
+        "title": "",
+        "text": "Your records stay on this computer. Add, edit, and save changes as you go.",
+        "collection": "",
+        "columns": [],
+        "mode": "",
+        "inputs": [],
+        "actions": []
+      },
+      {
+        "id": "records",
+        "type": "list",
+        "title": "Task Manager",
+        "text": "",
+        "collection": "tasks",
+        "columns": [
+          "title",
+          "priority",
+          "due",
+          "completed"
+        ],
+        "mode": "",
+        "inputs": [],
+        "actions": [
+          {
+            "id": "add_record",
+            "label": "Add",
+            "role": "add",
+            "capability": "",
+            "target": "none",
+            "form": "create_form",
+            "bindings": []
+          },
+          {
+            "id": "edit_record",
+            "label": "Edit",
+            "role": "edit",
+            "capability": "",
+            "target": "selected",
+            "form": "edit_form",
+            "bindings": []
+          },
+          {
+            "id": "primary_record",
+            "label": "Complete",
+            "role": "primary",
+            "capability": "local.records.update",
+            "target": "selected",
+            "form": "",
+            "bindings": [
+              {
+                "field": "completed",
+                "source": "literal",
+                "input": "",
+                "literal": true
+              }
+            ]
+          },
+          {
+            "id": "delete_record",
+            "label": "Delete",
+            "role": "delete",
+            "capability": "local.records.delete",
+            "target": "selected",
+            "form": "",
+            "bindings": []
+          }
+        ]
+      },
+      {
+        "id": "create_form",
+        "type": "form",
+        "title": "Add record",
+        "text": "",
+        "collection": "tasks",
+        "columns": [],
+        "mode": "create",
+        "inputs": [
+          {
+            "id": "create_title",
+            "field": "title"
+          },
+          {
+            "id": "create_priority",
+            "field": "priority"
+          },
+          {
+            "id": "create_due",
+            "field": "due"
+          }
+        ],
+        "actions": [
+          {
+            "id": "create_submit",
+            "label": "Add",
+            "role": "submit",
+            "capability": "local.records.insert",
+            "target": "none",
+            "form": "",
+            "bindings": [
+              {
+                "field": "title",
+                "source": "input",
+                "input": "create_title",
+                "literal": null
+              },
+              {
+                "field": "priority",
+                "source": "input",
+                "input": "create_priority",
+                "literal": null
+              },
+              {
+                "field": "due",
+                "source": "input",
+                "input": "create_due",
+                "literal": null
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "id": "edit_form",
+        "type": "form",
+        "title": "Edit record",
+        "text": "",
+        "collection": "tasks",
+        "columns": [],
+        "mode": "edit",
+        "inputs": [
+          {
+            "id": "edit_title",
+            "field": "title"
+          },
+          {
+            "id": "edit_priority",
+            "field": "priority"
+          },
+          {
+            "id": "edit_due",
+            "field": "due"
+          },
+          {
+            "id": "edit_completed",
+            "field": "completed"
+          }
+        ],
+        "actions": [
+          {
+            "id": "edit_submit",
+            "label": "Save changes",
+            "role": "submit",
+            "capability": "local.records.update",
+            "target": "selected",
+            "form": "",
+            "bindings": [
+              {
+                "field": "title",
+                "source": "input",
+                "input": "edit_title",
+                "literal": null
+              },
+              {
+                "field": "priority",
+                "source": "input",
+                "input": "edit_priority",
+                "literal": null
+              },
+              {
+                "field": "due",
+                "source": "input",
+                "input": "edit_due",
+                "literal": null
+              },
+              {
+                "field": "completed",
+                "source": "input",
+                "input": "edit_completed",
+                "literal": null
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

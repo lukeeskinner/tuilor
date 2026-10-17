@@ -1,0 +1,8 @@
+{
+  "kind": "declarative",
+  "version": 1,
+  "id": "task-manager",
+  "app": {
+    "name": "Task Manager"
+  }
+}

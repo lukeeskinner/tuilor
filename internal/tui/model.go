@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,10 +14,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lukeeskinner/tuilor/internal/codeapp"
 	"github.com/lukeeskinner/tuilor/internal/connections"
+	"github.com/lukeeskinner/tuilor/internal/localapp"
 )
 
 type Model struct {
 	workspace                         string
+	runtime                           *Runtime
+	localStore                        *localapp.Store
 	codeProject                       *codeapp.Project
 	codeSpec                          *codeapp.Spec
 	codeError, codePrompt, codeReturn string
@@ -39,8 +43,9 @@ type Model struct {
 }
 
 type loadedAppMsg struct {
-	code *codeapp.Project
-	err  error
+	local *localapp.Bundle
+	code  *codeapp.Project
+	err   error
 }
 
 func NewModel(appsDir string) Model {
@@ -49,7 +54,7 @@ func NewModel(appsDir string) Model {
 		screen = "home"
 	}
 	return Model{appsDir: appsDir,
-		choices: []string{"My Apps", "Create App", "MCP servers", "Settings"},
+		choices: []string{"My Apps", "Create App", "Settings"},
 		screen:  screen, width: 80, height: 24,
 	}
 }
@@ -64,16 +69,22 @@ func (m Model) Init() tea.Cmd {
 // Close waits for the pending operation's cleanup after external cancellation
 // or a terminal error. The CLI calls it on the final model returned by Bubble Tea.
 func (m Model) Close() error {
-	if m.cancel == nil {
-		return nil
+	if m.cancel != nil {
+		m.cancel()
+		select {
+		case <-m.done:
+		case <-time.After(8 * time.Second):
+			return fmt.Errorf("background operation did not finish cleanup within 8 seconds")
+		}
 	}
-	m.cancel()
-	select {
-	case <-m.done:
-		return nil
-	case <-time.After(8 * time.Second):
-		return fmt.Errorf("background operation did not finish cleanup within 8 seconds")
+	var err error
+	if m.runtime != nil {
+		err = errors.Join(err, m.runtime.Close())
 	}
+	if m.localStore != nil {
+		err = errors.Join(err, m.localStore.Close())
+	}
+	return err
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -101,6 +112,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, introTick()
 	case tea.WindowSizeMsg:
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
+		if m.runtime != nil {
+			m.runtime.Update(msg)
+		}
 		if m.creator != nil {
 			m.creator.resize(m.width, m.height)
 		}
@@ -133,22 +147,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen != "loading" {
 			return m, nil
 		} // Esc already left this request.
+		if msg.local != nil && msg.err == nil {
+			if err := m.openLocal(*msg.local); err != nil {
+				m.err = err
+				m.screen = "apps"
+			}
+			return m, nil
+		}
 		if msg.code != nil && msg.err == nil {
 			m.codeProject = msg.code
 			spec := msg.code.Spec
 			m.codeSpec = &spec
 			m.codePrompt = "Build " + spec.Name + "; preserve the existing app behavior and data."
 			m.codeError = ""
-			if msg.code.Ready() {
-				m.launchCode = true
-				return m, tea.Quit
-			}
-			return m.beginCodeBuild(msg.code, codeapp.Toolchain{})
+			m.codeReturn = "apps"
+			m.screen = "codeconfirm"
+			return m, nil
 		}
 		m.err, m.screen = msg.err, "apps"
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
+		if key == "ctrl+c" || (key == "q" && m.screen != "localapp" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -162,6 +181,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mcp != nil && strings.HasPrefix(m.screen, "mcp") {
 			return m.connectionKey(msg)
 		}
+		if m.runtime != nil && m.screen == "localapp" {
+			return m.updateLocal(msg)
+		}
 		if m.screen == "boot" {
 			m.screen = "home"
 			return m, nil
@@ -169,6 +191,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "esc" {
 			m.err = nil
 			switch m.screen {
+			case "codeconfirm":
+				m.screen = m.codeReturn
+				if m.screen == "" {
+					m.screen = "apps"
+				}
 			case "codereview":
 				return m.leaveCode()
 			case "codegenerating", "codebuilding", "codecancel":
@@ -188,6 +215,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		switch m.screen {
+		case "codeconfirm":
+			if key == "enter" {
+				if m.codeProject.Ready() {
+					m.launchCode = true
+					return m, tea.Quit
+				}
+				return m.beginCodeBuild(m.codeProject, codeapp.Toolchain{})
+			}
+		case "settings":
+			if key == "enter" {
+				if m.mcp == nil {
+					m.mcp = newConnections()
+				}
+				m.screen = "mcp"
+				return m.beginConnection("load", connections.Server{})
+			}
 		case "codereview":
 			return m.codeReviewKey(key)
 		case "create":
@@ -218,11 +261,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.creator.focus()
 				}
 				if m.cursor == 2 {
-					if m.mcp == nil {
-						m.mcp = newConnections()
-					}
-					m.screen = "mcp"
-					return m.beginConnection("load", connections.Server{})
+					m.screen = "settings"
 				}
 			}
 		case "apps":
@@ -248,6 +287,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
+	if m.runtime != nil && m.screen == "localapp" {
+		return m.updateLocal(msg)
+	}
 	if m.screen == "create" {
 		var cmd tea.Cmd
 		m.creator.prompt, cmd = m.creator.prompt.Update(msg)
@@ -268,6 +310,12 @@ func (m Model) View() string {
 		return m.connectionsView()
 	}
 	switch m.screen {
+	case "localapp":
+		return m.runtime.View()
+	case "codeconfirm":
+		return m.welcomeCanvas(goAppNotice(m.codeProject.Spec.Name))
+	case "settings":
+		return m.welcomeCanvas(studioHeader("Settings", studioWidth(m.width)) + "\n\n> Advanced connections (MCP)\n\nEnter Open · Esc Back · q Quit")
 	case "boot":
 		return m.bootView()
 	case "home":

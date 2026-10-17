@@ -2,20 +2,32 @@
 
 ## Vision and boundaries
 
-Tuilor generates Go terminal applications with custom layouts and behavior, builds
-them, and opens successful builds automatically. Keep generation separate from
-execution so saved apps run without an LLM. Users customize apps through prompts;
-Tuilor owns the starter, project storage, compilation, and process lifecycle.
-Use Go projects as the only application format. The legacy declarative JSON
-renderer and app generation paths have been removed by user request; do not
-restore them. JSON remains appropriate for structured AI responses, project
-manifests, and persistent app data. Preserve standalone MCP discovery. Prioritize
-local operation and portable source projects.
+Tuilor generates custom Go terminal apps from prompts. AI owns layouts, state,
+interactions and domain behavior; Tuilor owns the starter, persistence helpers,
+project paths, builds, cache, terminal handoff and child lifecycle. New generation
+must use GenerateCode and the source pipeline, not the fixed declarative catalog.
+Keep generation separate from execution so saved apps run without an LLM.
 
-Start with a modular Go application and the official MCP Go SDK. Add Bubble Tea,
-Bubbles, and Lip Gloss at the TUI milestone. Use filesystem storage initially.
-Avoid distributed services, databases, generic frameworks, and speculative
-interfaces. Planned logical components are not instructions to implement them.
+Preserve Cobra, styling, the official OpenAI Responses/Structured Outputs provider,
+MCP discovery and optional settings. Go projects are the default. Keep existing
+saved declarative bundles readable through their current validation/storage/runtime
+path, without migrating or deleting user data. Their retired AI generator and
+unsaved-app creation/publication flow have been removed; do not restore them.
+Do not expand their component framework to implement new-app requests. MCP and
+native app integrations remain future milestones; do not silently install servers
+or wire execution.
+
+Source apps run with the user's OS privileges and are not sandboxed. Display that
+boundary before generation; Generate authorizes compilation and automatic launch
+on success. Saved-app launches and Run Again require explicit trust confirmation.
+Go is required for creation/rebuilds, not compatible cached launches. Source may
+use pinned UI modules and explicitly requested additional pinned dependencies.
+Failed/canceled builds must never launch; paid repair requires an explicit action.
+
+Keep a modular Go application and filesystem storage. Avoid distributed services,
+databases, generic frameworks and speculative interfaces. The accepted default
+is recorded in docs/adr/0011-custom-go-default.md, superseding ADR 0010's default
+while retaining its saved-app compatibility.
 
 ## Mentor workflow
 
@@ -30,8 +42,8 @@ Use `.agents/skills/system-design-mentor/SKILL.md` for architecture learning and
 reviews. Maintain `docs/architecture.md` as an evolving design and record settled
 decisions in `docs/adr/`. Distinguish proposals from accepted decisions.
 
-The initialization request stops before Phase 1 production code. Until the user
-authorizes implementation, keep package layouts and API sketches in documentation.
+The return to custom Go generation is authorized. Honor accepted decisions
+without re-requesting approval; future architectural pivots need an agreed scope.
 
 ## Go conventions
 
@@ -47,11 +59,12 @@ authorizes implementation, keep package layouts and API sketches in documentatio
 
 ## Testing and observability
 
-Test observable behavior and failure paths. For Phase 1, cover tool metadata,
-pagination, empty lists, startup/protocol errors, timeouts, cancellation, and
-subprocess cleanup with a local test MCP server. Use synchronization instead of
-arbitrary sleeps in asynchronous tests. Keep fixtures independent of external
-services and credentials.
+Keep meaningful repository tests independent of paid APIs and real credentials.
+Cover source responses, explicit repair, preflight/build errors, cancellation,
+publication/save failures, data preservation, environment filtering, and terminal
+ownership. Preserve tests for saved declarative validation, CRUD, locking, corrupt
+data, keyboard interaction, and save/reopen. Preserve explicit saved-code consent
+and MCP discovery. Use synchronization rather than arbitrary asynchronous sleeps.
 
 Once a runnable Go module exists, run relevant tests, `go test ./...`,
 `go test -race ./...`, and `go vet ./...` as appropriate. Report what was actually
@@ -71,12 +84,16 @@ discovered tools. Future execution must enforce explicit permissions before
 side effects; generated definitions and tool annotations cannot grant them.
 Avoid embedding secrets in definitions or saved application files.
 
-Generated Go programs run with the user's OS permissions and are not sandboxed.
-Make that trust boundary visible before generation. The user's Generate action
-authorizes compilation and automatic launch after success; failed or canceled
-builds must never launch. Do not pass AI credentials/configuration into compiler
-or app environments. Use host-owned paths and separate argv values for build and
-launch. AI repair requires an explicit user action; never retry billable requests
-automatically. No new MCP integration inside generated programs is authorized by
-this milestone. Any future MCP tool execution needs explicit permissions;
-discovery metadata and generated code cannot grant them.
+Generated Go programs have full user OS privileges. Static checks and compilation
+do not prove safety. Tuilor chooses build/launch paths and separate argv values;
+never pass AI credentials/configuration into compiler/app environments. No shell
+interpolation, automatic toolchain installation/upgrades, or cgo. Make execution
+trust visible before generation and require confirmation before saved-code launches.
+Do not retry billable requests automatically; repair needs an explicit user action.
+Do not add an app/MCP runtime bridge in this milestone.
+
+For saved declarative apps, validate definitions and record values, preserve corrupt
+data and pending input on failures, persist before changing display state, and hold
+the existing single-writer lock. Their definitions cannot grant extra capabilities,
+choose paths, embed credentials, or execute code. Preserve exact-record deletion
+confirmation. These bounds do not sandbox generated Go programs.

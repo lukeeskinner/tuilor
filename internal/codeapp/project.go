@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -250,12 +251,45 @@ func CopyData(ctx context.Context, from, to string) error {
 	})
 }
 
+var appID = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,79}$`)
+
+func ValidateID(id string) error {
+	if id != "" && !appID.MatchString(id) {
+		return fmt.Errorf("--name must use lowercase letters, digits, and hyphens (up to 80 characters)")
+	}
+	return nil
+}
+
 func (p *Project) Save(ctx context.Context, directory string) (*Project, error) {
+	return p.SaveAs(ctx, directory, "")
+}
+
+// SaveAs optionally uses a user-requested ID. Generated source never chooses the
+// destination. A completed save updates this project, making repeated saves safe.
+func (p *Project) SaveAs(ctx context.Context, directory, id string) (*Project, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := ValidateID(id); err != nil {
+		return nil, err
+	}
 	if !p.Draft {
 		return p, nil
 	}
 	if !p.Ready() {
 		return nil, fmt.Errorf("compile successfully before saving")
+	}
+	if id == "" {
+		id = "go-" + rand.Text()
+	}
+	path, err := filepath.Abs(filepath.Join(directory, id))
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("app ID %q already exists; choose another --name", id)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("check app destination: %w", err)
 	}
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
@@ -290,17 +324,17 @@ func (p *Project) Save(ctx context.Context, directory string) (*Project, error) 
 	if err := os.WriteFile(filepath.Join(stage, ".bin", filepath.Base(p.binary())), data, 0700); err != nil {
 		return nil, err
 	}
-	path, err := filepath.Abs(filepath.Join(directory, "go-"+rand.Text()))
-	if err != nil {
-		return nil, err
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return nil, fmt.Errorf("app ID %q already exists; choose another --name", id)
+	} else if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("check app destination: %w", err)
 	}
 	if err := os.Rename(stage, path); err != nil {
 		return nil, fmt.Errorf("publish generated app: %w", err)
 	}
-	next := *p
-	next.Dir, next.Draft = path, false
-	return &next, nil
+	p.Dir, p.Draft = path, false
+	return p, nil
 }

@@ -263,7 +263,7 @@ func (m Model) connectionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		c.failed = false
 		switch m.screen {
 		case "mcp":
-			m.screen = "home"
+			m.screen = "settings"
 		case "mcpform", "mcpdetail":
 			m.screen = "mcp"
 		default:

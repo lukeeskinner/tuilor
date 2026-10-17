@@ -18,7 +18,7 @@ func NewRootCommand() *cobra.Command {
 	var appsDir string
 	root := &cobra.Command{
 		Use:           "tuilor",
-		Short:         "Build terminal applications with AI and MCP",
+		Short:         "Turn an idea into a reusable terminal application",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) (runErr error) {
@@ -53,7 +53,7 @@ func NewRootCommand() *cobra.Command {
 			}
 		},
 	}
-	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved Go app projects")
+	root.Flags().StringVar(&appsDir, "apps-dir", "apps", "Directory containing saved applications")
 
 	version := &cobra.Command{
 		Use:   "version",
@@ -97,6 +97,7 @@ func NewRootCommand() *cobra.Command {
 
 	root.AddCommand(toolsCmd)
 	root.AddCommand(newCreateCommand())
+	root.AddCommand(newRunCommand())
 
 	return root
 

@@ -1,10 +1,11 @@
-// Package generator turns requests into generated Go application source.
+// Package generator turns requests into application source.
 package generator
 
 import "context"
 
 // Provider is defined at its consumer so verification can substitute an AI
-// without API charges. Its response is untrusted; compilation happens separately.
+// without API charges. Its response is untrusted; source validation and compilation
+// happen separately.
 type Provider interface {
 	Generate(context.Context, Request) ([]byte, error)
 }

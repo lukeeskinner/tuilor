@@ -31,7 +31,8 @@ type codeSavedMsg struct {
 	err     error
 }
 
-// WithWorkspace gives the CLI ownership of all unsaved source, builds and data.
+// WithWorkspace gives the CLI ownership of all unsaved app definitions and data,
+// as well as any retained legacy project work.
 func (m Model) WithWorkspace(path string) Model { m.workspace = path; return m }
 func (m Model) CodeLaunch() *codeapp.Project {
 	if m.launchCode {
@@ -51,6 +52,8 @@ func (m Model) CodeReturned(err error) Model {
 	return m
 }
 
+// Source generation and explicit repair share preparation and build stages.
+// Terminal handoff remains the CLI's responsibility after a successful build.
 func (m Model) beginCodeGeneration(provider generator.Provider, repair bool) (tea.Model, tea.Cmd) {
 	if m.loading {
 		return m, nil
@@ -70,6 +73,9 @@ func (m Model) beginCodeGeneration(provider generator.Provider, repair bool) (te
 		m.codeError = "No project workspace configured."
 		m.screen = "codereview"
 		return m, nil
+	}
+	if !repair {
+		m.codeProject, m.codeSpec, m.codeError = nil, nil, ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	m.cancel, m.done = cancel, make(chan struct{})
@@ -236,15 +242,18 @@ func (m Model) codeReviewKey(key string) (tea.Model, tea.Cmd) {
 	case "enter":
 		switch choices[min(m.codeCursor, len(choices)-1)] {
 		case "Run Again":
-			m.launchCode = true
-			return m, tea.Quit
+			m.codeReturn = "codereview"
+			m.screen = "codeconfirm"
+			return m, nil
 		case "Save":
 			m.loading, m.screen = true, "saving"
-			m.cancel, m.done = func() {}, make(chan struct{})
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			m.cancel, m.done = cancel, make(chan struct{})
 			project, directory, done := m.codeProject, m.appsDir, m.done
 			return m, func() tea.Msg {
 				defer close(done)
-				saved, err := project.Save(context.Background(), directory)
+				defer cancel()
+				saved, err := project.Save(ctx, directory)
 				return codeSavedMsg{saved, err}
 			}
 		case "Repair with AI (billable)":

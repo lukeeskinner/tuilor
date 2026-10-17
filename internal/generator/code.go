@@ -11,6 +11,10 @@ import (
 )
 
 const codeInstructions = `Write a complete, useful local terminal app as Go source, not a declarative UI.
+Design the requested application, including its own layout, state, interactions and
+domain logic. You are not restricted to predefined components, forms, CRUD screens,
+task managers, one collection, or one page. The reference below demonstrates the
+host contract; its domain and layout are not a template you must reproduce.
 Return JSON with status, name, source, dependencies, reason. On success use status
 "success", a descriptive name, source for app.go, dependencies [], and reason "".
 If the request needs unavailable external integrations (including MCP wiring), return

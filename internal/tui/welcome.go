@@ -107,7 +107,7 @@ func (m Model) homeView() string {
 			rows = append(rows, line.Foreground(welcomeMuted).Render("Your terminal, made to measure."), "")
 		}
 	}
-	descriptionsText := []string{"Your saved apps. Ready when you are.", "Turn an idea into a working terminal app.", "Your servers, sign-ins, and discovered tools.", "Make yourself at home. Coming soon."}
+	descriptionsText := []string{"Your saved apps. Ready when you are.", "Turn an idea into a working terminal app.", "Preferences and optional advanced connections."}
 	// Keep the selected entry and help visible even in a six-row terminal.
 	footerRows := 1
 	if m.height >= 12 {
@@ -121,9 +121,7 @@ func (m Model) homeView() string {
 	start := max(0, m.cursor-count+1)
 	for i := start; i < min(len(m.choices), start+count); i++ {
 		label := m.choices[i]
-		if i == 3 && width >= 30 {
-			label += "  · soon"
-		}
+
 		prefix := "  "
 		style := line.Foreground(welcomeInk)
 		detailStyle := line.Foreground(welcomeMuted)

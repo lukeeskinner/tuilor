@@ -16,7 +16,7 @@ type creationModel struct {
 
 func newCreation() *creationModel {
 	prompt := textarea.New()
-	prompt.Placeholder = "What should your app do?\nFor example: a reading tracker with ratings and a yearly goal."
+	prompt.Placeholder = "What should your app do?\nDescribe its layout, keyboard controls, and behavior."
 	prompt.Prompt = "› "
 	prompt.ShowLineNumbers = false
 	style := textarea.Style{
@@ -90,11 +90,12 @@ func (c creationModel) View(width, height int) string {
 			line.Foreground(welcomeMuted).Render("Describe what it does and how you want to use it."), "",
 			line.Foreground(welcomeLilac).Render("YOUR BRIEF"))
 	}
-	model := line.Foreground(welcomeLilac).Render("Model: " + escapeControls(generator.ConfiguredModel()) + " · Generated Go app")
+	model := line.Foreground(welcomeLilac).Render("Model: " + escapeControls(generator.ConfiguredModel()) + " · Custom Go app")
 	billing := line.Foreground(welcomeMuted).Render("OpenAI request (billable).")
-	permissions := line.Foreground(welcomePeach).Render("Runs Go with your OS access.")
+	permissions := line.Foreground(welcomePeach).Render("Generate builds & runs code with your OS permissions.")
 	if compact {
 		model = line.Foreground(welcomeLilac).Render("Model: " + escapeControls(generator.ConfiguredModel()))
+		permissions = line.Foreground(welcomePeach).Render("Runs AI code · OS access · no sandbox")
 		rows = append(rows, model, billing, permissions)
 	}
 	border := welcomeRule
@@ -168,6 +169,10 @@ func (m Model) generationView() string {
 
 func (m Model) beginGeneration() (tea.Model, tea.Cmd) {
 	if m.loading {
+		return m, nil
+	}
+	if m.width < 30 || m.height < 10 {
+		m.creator.setMessage("Enlarge terminal to review the generation notice and controls.", m.width, m.height)
 		return m, nil
 	}
 	prompt := m.creator.prompt.Value()

@@ -3,8 +3,10 @@
 **Describe a terminal app. Generate it, build it, and use it.**
 
 Tuilor generates Go applications with custom Bubble Tea layouts and behavior.
-A successful build opens automatically. Exit the app to save it, run it again,
-or discard it. Saved apps launch from **My Apps** without an AI request.
+AI designs the app's code rather than choosing from a fixed component catalog.
+Tuilor supplies the starter, local persistence helpers, build pipeline, terminal
+handoff, and project storage. Successful home-screen builds open automatically.
+Saved apps reopen without regeneration or an AI request.
 
 ## Build
 
@@ -12,7 +14,6 @@ Use Go 1.25.5 or later:
 
 ```sh
 go build -o bin/tuilor ./cmd/tuilor
-go build -o bin/testserver ./cmd/testserver
 ```
 
 Go is required for generation and rebuilding. A compatible cached app can run
@@ -20,7 +21,8 @@ without Go. Initial builds may download pinned dependencies through Go tooling.
 
 ## Generate and open an app
 
-Set `OPENAI_API_KEY` in the terminal where you run Tuilor. In zsh:
+Set `OPENAI_API_KEY` in the shell that launches Tuilor. Do not put keys in prompts,
+source files, or version control. In zsh:
 
 ```zsh
 read -rs "OPENAI_API_KEY?OpenAI API key: "
@@ -29,96 +31,102 @@ echo
 ./bin/tuilor
 ```
 
-1. Choose **Create App** and describe an app, such as **Build a todo list app**.
-2. Enter inserts a newline; **Ctrl+G** makes a billable OpenAI request.
-3. Tuilor checks the installed Go toolchain, generates source, and compiles it.
+1. Choose **Create App** and describe its behavior, layout, and keyboard controls.
+2. Enter inserts a newline; **Ctrl+G** starts one billable OpenAI request.
+3. Tuilor checks Go before the paid request, generates source, and compiles it.
 4. A successful build opens automatically. **Esc** or **Ctrl+C** returns to Tuilor.
 5. Choose **Save**, **Run Again**, or **Discard**. Save retains source and trial data.
 6. After saving, Esc opens My Apps with the new app selected.
 
-Startup shows a brief animated wordmark, then the colorful home menu. Press any
-key to skip the intro. Small terminals get a compact layout; light and dark
-terminal backgrounds have matching palettes. Use `TUILOR_REDUCED_MOTION=1` to
-skip startup animation, or `NO_COLOR=1` to disable color. The intro makes no AI
-requests or server connections and does not replay after exiting an app.
+**Generate builds and runs AI-written code with your OS permissions. It is not
+sandboxed.** Only request and run apps you trust. Build and app environments omit
+OpenAI credentials and Tuilor AI settings, but programs can still access other
+files and resources available to your account. Saved-app launches ask for explicit
+trust confirmation before executing or rebuilding code.
 
-Create App uses a centered multiline brief editor with the current model, billing
-notice, execution notice, and shortcuts kept visible. Compact terminals use a
-smaller layout. Generation, compilation, cancellation, saving, and review share
-the same studio palette; progress labels reflect the actual operation.
+Try different local apps: a notes editor, a focus timer, a file-backed tracker,
+or a calculator with a custom layout. New apps are not restricted to forms, one
+page, one collection, or task management. Compilation proves buildability, not
+correct behavior, safety, or visual quality. Real API integrations still need real
+credentials and supported wiring; Tuilor does not invent working connections.
+MCP-backed apps and managed native connectors remain future work.
 
-Generated code runs with your OS permissions. It is **not sandboxed**. Only
-request and run apps you trust. Tuilor removes OpenAI credentials and Tuilor AI
-configuration from compiler and app environments; this does not prevent programs
-from accessing other files or resources available to your account.
+The AI writes `app.go` with `newModel() (tea.Model, error)`. The host owns main.go,
+startup/exit, resize delivery, and loadData/saveData helpers. Generated code owns
+the domain state, interactions, and responsive layout. Instructions require
+scrolling, focus visibility, narrow layouts and very-small-terminal fallbacks.
+The default modules are the standard library, Bubble Tea 1.3.10, Bubbles 1.0.0,
+and Lip Gloss 1.1.0. Additional modules require an explicit user request and exact
+pinned versions. Tuilor does not install servers automatically; build and launch
+commands use separate arguments without shell interpolation.
 
-The AI writes `app.go` implementing `newModel() (tea.Model, error)`. Tuilor supplies
-the entry point, terminal lifecycle, exit keys, and atomic local data helpers.
-The AI chooses the app's interface, model, and data structures. Generation asks
-for responsive sizing, scrolling, visible focus/help, and small-terminal fallbacks.
-Generation includes a small compiling reference for the pinned widget APIs,
-persistence, and sizing, plus the host helper contract. The host entry-point
-implementation is kept out of the generation context. Compilation establishes buildability; actual behavior
-and visual quality still need runtime verification.
+The existing `gpt-6.1-sol` model default and `TUILOR_MODEL` override are retained.
+The model must support Responses and strict Structured Outputs. JSON transports
+the source and metadata; it does not define the generated app's interface.
+Generation/preflight has a 90-second deadline. Dependency preparation and
+compilation have a separate 120-second deadline. Go toolchain upgrades and cgo
+are disabled. Esc cancels and waits for cleanup; canceled/failed builds never open.
 
-The default libraries are Go's standard library, Bubble Tea v1.3.10, Bubbles
-v1.0.0, and Lip Gloss v1.1.0. Explicitly requested third-party modules may be
-included with pinned versions. Undeclared imports and invalid dependency
-declarations are rejected. No new MCP wiring inside generated programs is
-implemented in this milestone.
+Errors retain the prompt and candidate. **Repair with AI (billable)** sends the
+previous source and diagnostics in one explicit request, then compiles again.
+Tuilor never retries or repairs paid requests automatically. A failed repair keeps
+previous trial data; repairs are instructed to preserve its format, but there is
+no general schema-migration guarantee for arbitrary generated code.
 
-The default model is `gpt-6.1-sol`, selected for stronger code generation with a
-balance of capability and cost. It supports Responses and Structured Outputs;
-see the [official model documentation](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
-It costs more per token than the previous `gpt-4.1-mini` default. `TUILOR_MODEL`
-still overrides it; the Create App screen shows the selected model. To use the
-new default after previously exporting a model, run `unset TUILOR_MODEL`.
-Generation uses the
-official OpenAI Go SDK, Responses API, and strict Structured Outputs to transport
-source and metadata. It has a 90-second deadline, including preflight. Dependency
-preparation and compilation have a separate 120-second deadline.
+The colorful intro and creation workspace remain. Press any key to skip startup;
+`TUILOR_REDUCED_MOTION=1` skips it and `NO_COLOR=1` disables colors. `q` remains
+text inside the prompt and generated inputs. The starter reserves Esc/Ctrl+C for
+returning to Tuilor.
 
-Esc cancels an active operation and waits for cleanup; canceled builds never
-launch automatically. Errors preserve the prompt and candidate. **Repair with AI**
-is an explicit, billable action after an error; Tuilor never repairs or retries
-AI requests automatically.
+## CLI creation and saved apps
 
-## Save and reopen
+```sh
+./bin/tuilor create "Build a focus timer with keyboard controls" --name focus-timer
+./bin/tuilor run focus-timer
+```
 
-Run `./bin/tuilor`, choose **My Apps**, and select a name. Use `--apps-dir ./my-apps`
-to choose another library. Names include filenames to distinguish duplicates.
+CLI create generates, validates, compiles and saves **without launching**. It
+prints the assigned ID and exact run command. --name requests a stable ID and
+rejects existing destinations before a paid request, and again during publication.
+Omit it for a host-assigned ID. --output-dir chooses the library; use the same
+path through run --apps-dir or the root --apps-dir. --timeout changes only the
+generation/preflight deadline, not the separate build deadline.
 
-Generated app directories contain a host-written manifest, source, starter,
-module files, `data/`, and a cached executable in `.bin/`. Keep the directory
-together when moving it. Source/module/starter/platform fingerprints and a binary
-hash detect stale caches. Missing or stale caches rebuild without AI; build errors
-are shown instead of triggering regeneration. These hashes are cache checks, not
-code signatures or a security boundary.
+A saved Go app directory contains manifest.json, app.go, main.go, pinned module
+files, data/, and a cached executable in .bin/. Keep it together when moving it.
+Source/starter/module/platform fingerprints and binary hashes detect stale caches;
+they are not signatures or a sandbox. Missing/stale builds rebuild without AI,
+requiring Go and possibly dependency downloads. Build failures are shown rather
+than triggering automatic regeneration. Saved Go apps are labeled **Go app**.
 
-Unsaved projects live in a private session directory. Save publishes a complete
-private directory and retains trial data. Save failures preserve the candidate;
-repeated Save does not create duplicates. Discard removes the candidate and
-restores the prompt. Remaining session files are cleaned up when Tuilor exits.
-The starter's data helpers use atomic replacement and preserve malformed data;
-generated apps are instructed to report storage errors before changing displayed
-state. Use one running instance per app; concurrent writes are not merged.
+Unsaved projects live in a private session workspace. Save stages a complete
+sibling directory and renames it into place; repeated Save does not duplicate.
+Failed saves preserve the candidate, and Discard restores the prompt. The CLI
+cleans session files on exit. Starter data helpers atomically replace JSON and
+preserve malformed files. Generated code must use these helpers correctly; they
+are conventions, not enforcement against arbitrary code. Use one instance per
+Go app: generated programs do not acquire the declarative store's writer lock.
 
-To try the hand-authored Go example without an AI request:
+Try a hand-authored source app without a paid request, using an unused destination:
 
 ```sh
 mkdir -p apps
 cp -R examples/code-todo apps/code-todo
-./bin/tuilor
+./bin/tuilor run code-todo
 ```
 
-Open **Todo (Go)**. Type a task and Enter; Tab focuses the list; arrows select,
-Space completes, and Delete asks for confirmation. Esc always returns to Tuilor.
-The example has its own module so it is excluded from the host's package build;
-Tuilor supplies its starter and resolves its dependencies when opening it.
+Opening it asks for trust and builds the missing cache. Saved declarative bundles
+from the previous milestone remain supported through My Apps and run. Their
+local runtime, storage, locks and validation are retained for compatibility;
+new Create App and CLI create no longer generate them. The retired JSON generator,
+its AI schema and unsaved-JSON creation flow have been removed. No existing app
+files are migrated or deleted.
 
 ## MCP connections and browser sign-in
 
-Choose **MCP servers** on the home screen. This works without an OpenAI API key.
+
+
+Choose **Settings → Advanced connections (MCP)**. This works without an OpenAI API key.
 
 1. Press **n** to add a connection. New connections start as **Remote service**
    with **Browser sign-in**. Give it a name and paste the MCP server URL provided
@@ -177,53 +185,38 @@ Each check closes its session, so **Last check passed** describes the last check
 not a continuously running connection. Tools are rediscovered on each check.
 
 This milestone performs initialization and tool discovery only: **no AI requests
-or tool calls**. Saved Go apps do not use these connections yet. Selecting them
-during generation and adding explicit tool-call approval is the next milestone.
+or tool calls**. Generated apps do not use these connections yet. Native integrations and
+explicitly approved MCP-backed actions remain future work.
 
-## CLI generation and MCP discovery
+## Standalone discovery
 
 ```sh
-./bin/tuilor create "Build a notes app"
+go build -o bin/testserver ./cmd/testserver
 ./bin/tuilor tools ./bin/testserver
 ./bin/tuilor version
 ```
 
-CLI `create` now generates Go source, compiles it, saves the project, and prints
-its directory. It does not launch the app; open it through My Apps. `--output-dir`
-chooses its library, and `--timeout` changes the generation/preflight deadline.
-Building has a separate 120-second deadline. A failed build never publishes an app.
-The CLI prints the model and trust notice to stderr before the API request.
-
-Standalone MCP tool and input-schema discovery remains available through `tools`. Start
-only trusted local servers: discovery runs them with your OS permissions and is
-not a sandbox. The test server exposes `greet`. Generated Go apps currently have
-no built-in MCP connection or execution support.
-
-## Retired JSON app format
-
-The declarative JSON generator, schemas, renderer, local collection runtime, and
-MCP form execution have been removed. Both Create App and CLI `create` now produce
-Go projects. My Apps lists project directories containing `manifest.json`;
-old flat JSON definitions and `app.json` collection bundles are ignored. Existing
-files in your apps directory are left untouched. Root/creation `--server` flags
-are no longer supported; use `tools <server-executable>` for MCP discovery.
-
-JSON remains in use for source-response Structured Outputs, project manifests,
-and app data. These describe transport and storage, not a fixed component renderer.
+MCP is optional. Discovery initializes and lists tools/schemas, then closes the
+session; it does not call tools. Only start trusted executables with separate
+arguments. Existing MCP settings and OAuth behavior remain unchanged.
 
 ## Development
 
 ```sh
 go fmt ./...
 go build ./...
+go test ./...
+go test -race ./...
 go vet ./...
+git diff --check
 ```
 
-There are no repository test files, by project choice. Verification uses temporary
-HTTP/MCP fixtures, real local compilation, and terminal checks. No paid generation
-is part of those checks. A real generation is initiated manually with Ctrl+G.
+Repository tests cover source-response validation, explicit repair inputs,
+preflight failures, invalid-source rejection, cancellation, atomic publication,
+credential-environment filtering and saved declarative compatibility. Temporary
+mock-HTTP/PTY fixtures exercise real compilation and terminal handoff without a
+paid API. Live generation and actual app quality remain separate manual checks.
 
-See [architecture](docs/architecture.md), [ADRs](docs/adr/), and
-[repository instructions](AGENTS.md). [ADR 0006](docs/adr/0006-generated-go-apps.md)
-records Go generation. [ADR 0007](docs/adr/0007-go-only-apps.md) records removal
-of the legacy app runtime and the new model default.
+See [architecture](docs/architecture.md), [ADR 0011](docs/adr/0011-custom-go-default.md),
+and [repository instructions](AGENTS.md). ADR 0011 supersedes ADR 0010's choice
+of declarative generation as the default, retaining its saved-app compatibility.

@@ -100,7 +100,7 @@ func (p *OpenAI) Generate(ctx context.Context, request Request) ([]byte, error) 
 	}
 	output := response.OutputText()
 	if strings.TrimSpace(output) == "" {
-		return nil, fmt.Errorf("OpenAI returned no application source")
+		return nil, fmt.Errorf("OpenAI returned no application output")
 	}
 	return []byte(output), nil
 }
