@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/lukeeskinner/tuilor/internal/codeapp"
+	"github.com/lukeeskinner/tuilor/internal/connections"
 )
 
 type Model struct {
@@ -30,6 +31,7 @@ type Model struct {
 	fileLabels                        []string
 	err                               error
 	creator                           *creationModel
+	mcp                               *connectionModel
 	width, height                     int
 	cancel                            context.CancelFunc
 	done                              chan struct{}
@@ -69,13 +71,24 @@ func (m Model) Close() error {
 	select {
 	case <-m.done:
 		return nil
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("background operation did not finish cleanup within 5 seconds")
+	case <-time.After(8 * time.Second):
+		return fmt.Errorf("background operation did not finish cleanup within 8 seconds")
 	}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case connectionMsg:
+		return m.connectionResult(msg)
+	case connectionURLMsg:
+		if m.mcp != nil && msg.request == m.mcp.request && !m.mcp.cancelled && m.loading {
+			m.mcp.authURL = msg.url
+			m.mcp.viewportText = "Open this sign-in URL if the browser did not open:\n\n" + escapeControls(msg.url)
+			m.mcp.viewportWidth = 0
+			m.mcp.viewport.GotoTop()
+			return m, waitConnectionURL(msg.request, msg.events)
+		}
+		return m, nil
 	case introTickMsg:
 		if m.screen != "boot" {
 			return m, nil
@@ -90,6 +103,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = max(1, msg.Width), max(1, msg.Height)
 		if m.creator != nil {
 			m.creator.resize(m.width, m.height)
+		}
+		if m.mcp != nil && m.mcp.form != nil {
+			m.mcp.form.resize(m.width)
 		}
 	case codePreparedMsg:
 		return m.codePrepared(msg)
@@ -132,7 +148,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err, m.screen = msg.err, "apps"
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
+		if key == "ctrl+c" || (key == "q" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -142,6 +158,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.quitting {
 			return m, nil
+		}
+		if m.mcp != nil && strings.HasPrefix(m.screen, "mcp") {
+			return m.connectionKey(msg)
 		}
 		if m.screen == "boot" {
 			m.screen = "home"
@@ -182,6 +201,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "down":
 				m.cursor = min(len(m.choices)-1, m.cursor+1)
 			case "enter":
+				if m.loading {
+					return m, nil
+				}
 				m.screen = m.choices[m.cursor]
 				if m.cursor == 0 {
 					m.screen, m.appCursor = "apps", 0
@@ -194,6 +216,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.creator.resize(m.width, m.height)
 					m.screen = "create"
 					return m, m.creator.focus()
+				}
+				if m.cursor == 2 {
+					if m.mcp == nil {
+						m.mcp = newConnections()
+					}
+					m.screen = "mcp"
+					return m.beginConnection("load", connections.Server{})
 				}
 			}
 		case "apps":
@@ -224,6 +253,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.creator.prompt, cmd = m.creator.prompt.Update(msg)
 		return m, cmd
 	}
+	if m.screen == "mcpform" {
+		return m, m.mcp.form.update(msg)
+	}
 
 	return m, nil
 }
@@ -231,6 +263,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	if m.quitting {
 		return "Stopping current operation…\n"
+	}
+	if m.mcp != nil && strings.HasPrefix(m.screen, "mcp") {
+		return m.connectionsView()
 	}
 	switch m.screen {
 	case "boot":

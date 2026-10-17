@@ -116,6 +116,70 @@ Space completes, and Delete asks for confirmation. Esc always returns to Tuilor.
 The example has its own module so it is excluded from the host's package build;
 Tuilor supplies its starter and resolves its dependencies when opening it.
 
+## MCP connections and browser sign-in
+
+Choose **MCP servers** on the home screen. This works without an OpenAI API key.
+
+1. Press **n** to add a connection. New connections start as **Remote service**
+   with **Browser sign-in**. Give it a name and paste the MCP server URL provided
+   by your server provider. A name such as Google is a label, not a built-in
+   integration, and an ordinary website URL is not an MCP endpoint.
+2. Tab/Shift+Tab changes focus; left/right changes Connection and Sign-in.
+   Choose **Local program** for an installed MCP server. Enter its program path;
+   for the test server, use the absolute path to `bin/testserver`.
+3. Optional settings stay under **Advanced settings** (focus it and press Enter).
+   Local programs can specify arguments **one per line**, a working folder, and
+   environment-variable names. Browser sign-in exposes a client ID and callback
+   port only when Advanced is open. Collapsing Advanced preserves entered values.
+   Arguments are literal values, never a shell command. **q** types normally.
+   Remote services can also use **No sign-in** or **API token**; API token stores
+   a variable name such as `MY_MCP_TOKEN`, whose value you set before launching
+   Tuilor. HTTPS is required except on loopback; never paste tokens into a URL.
+4. **Ctrl+S** saves. Enter opens a connection's actions. OAuth connections offer
+   **Sign In** and **Sign Out**. Sign In opens the browser; the displayed URL also
+   works if browser launch fails. Check Connection never opens a browser.
+5. Choose **Check Connection**, then **View Tools** to inspect descriptions and
+   input/output schemas. Page Up/Page Down scrolls tool metadata.
+
+Local checks ask before starting the executable. It runs with your OS permissions,
+not in a sandbox. Only a small runtime environment and explicitly selected
+variables are forwarded; OpenAI credentials and Tuilor settings are excluded.
+Do not put secrets in command arguments. Server stdout is reserved for MCP;
+raw stderr and remote error bodies are not displayed or logged.
+
+Connections live in `os.UserConfigDir()/tuilor/mcp.json` (on macOS,
+`~/Library/Application Support/tuilor/mcp.json`). This contains nonsecret settings
+and host-assigned IDs. Failed saves and corrupt configuration preserve the files.
+Use one Tuilor instance when editing connection settings; concurrent edits are
+not merged. **Remove** asks for confirmation. Edits that change an OAuth endpoint
+or authentication settings clear the old login before saving new settings.
+
+OAuth supports public clients with PKCE and either a pre-registered client ID or
+server-provided dynamic registration. The callback is
+`http://127.0.0.1:<port>/callback`; port `0` selects a free port. Set a fixed port
+when a pre-registered client requires an exact redirect URL. Servers requiring
+confidential-client credentials or only hosted client metadata documents are not
+supported yet. Signing into an MCP server does not automatically implement its
+separate downstream-account setup, if any.
+
+OAuth tokens and refresh settings are stored in the OS credential store using
+`github.com/zalando/go-keyring v0.2.8`, never in project source or configuration.
+macOS uses Keychain; supported Windows/Linux environments use their native
+credential stores. A locked or unavailable store is an error, with no plaintext
+fallback. Sign Out removes Tuilor's local login; revoke provider-side access
+separately if desired. Expired tokens refresh during a check; invalid refresh
+credentials require Sign In again.
+
+Checks have a 10-second deadline; browser sign-in allows five minutes. Esc cancels
+and returns; Ctrl+C cancels and exits. Cleanup is bounded, late results do not
+reopen screens, and OS credential-store calls can still require an OS prompt.
+Each check closes its session, so **Last check passed** describes the last check,
+not a continuously running connection. Tools are rediscovered on each check.
+
+This milestone performs initialization and tool discovery only: **no AI requests
+or tool calls**. Saved Go apps do not use these connections yet. Selecting them
+during generation and adding explicit tool-call approval is the next milestone.
+
 ## CLI generation and MCP discovery
 
 ```sh
@@ -130,7 +194,7 @@ chooses its library, and `--timeout` changes the generation/preflight deadline.
 Building has a separate 120-second deadline. A failed build never publishes an app.
 The CLI prints the model and trust notice to stderr before the API request.
 
-MCP tool and input-schema discovery remains available through `tools`. Start
+Standalone MCP tool and input-schema discovery remains available through `tools`. Start
 only trusted local servers: discovery runs them with your OS permissions and is
 not a sandbox. The test server exposes `greet`. Generated Go apps currently have
 no built-in MCP connection or execution support.

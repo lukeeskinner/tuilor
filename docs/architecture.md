@@ -1,6 +1,7 @@
 # Tuilor architecture
 
-Status: Go-only apps with automatic launch and standalone MCP discovery, 2026-10-16.
+Status: Go-only apps with automatic launch, saved MCP connections, and browser
+sign-in, 2026-10-16.
 [ADR 0001](adr/0001-initial-architecture.md) records the local-first modular Go
 direction. [ADR 0002](adr/0002-app-preview.md) records the preview design;
 [ADR 0003](adr/0003-form-execution.md) extends it with form execution;
@@ -96,6 +97,69 @@ omit OpenAI credentials and Tuilor AI settings. This is not a sandbox; static
 checks and compilation cannot establish application safety or correctness.
 No new MCP integration inside generated programs is implemented in this milestone.
 
+## MCP connection management
+
+[ADR 0009](adr/0009-mcp-connections.md) records connection management and OAuth.
+MCP Servers is a concrete Bubble Tea screen, not a catalog. Users configure either
+a trusted stdio executable with separate argv values or a Streamable HTTP URL.
+The connections package owns a versioned nonsecret document at
+os.UserConfigDir()/tuilor/mcp.json, validated before every atomic replacement.
+It assigns IDs independently of names; duplicate names are distinguishable by ID.
+Corrupt configuration is reported and preserved. Concurrent editors are outside
+the initial guarantee; one instance should edit settings at a time.
+
+The add form defaults to Remote service / Browser sign-in and uses plain-language
+labels instead of transport/authentication enum names. Only essential fields are
+initially visible. Advanced settings reveals local argv/folder/environment or OAuth
+client/callback options; hiding it preserves values and does not change storage or
+validation. Naming a connection does not create an integration or infer a provider.
+
+The mcpclient package exposes Discover and SignIn but no tool-call entry point.
+Discover initializes, iterates paginated tools (including input/output schemas),
+and closes the session. Local processes receive a minimal runtime environment
+plus explicitly selected variable names, excluding OPENAI_, AZURE_OPENAI_, and
+TUILOR_ variables. Server stderr is discarded; remote SDK errors are translated
+to fixed messages to avoid leaking response bodies or credentials. Metadata is
+bounded to 1,000 tools / 2 MiB and escaped before display. There are no sampling,
+elicitation, resource, or execution callbacks.
+
+The TUI owns operation cancellation/completion signals and request IDs; contexts
+belong to commands, never model fields. A check has a 10-second deadline, closes
+its session, and reaps its direct local subprocess. One operation runs at a time.
+Esc cancels and suppresses late screen updates. CLI/model shutdown allows bounded
+cleanup, including the HTTP SDK's bounded session-termination request. There is
+no automatically running connection after a successful check.
+
+SignIn is a separate, explicit five-minute operation. The SDK's authorization-code
+handler owns metadata discovery, registration, PKCE, and state/issuer validation.
+Tuilor owns a temporary loopback listener, validates callback state before
+accepting a response, opens the system browser without a shell, and exposes a
+manual URL fallback. The listener closes on every completion path. HTTP endpoints
+require HTTPS except for loopback development; redirects are not automatically
+followed, preventing bearer credentials from being forwarded to another endpoint.
+Public pre-registered clients and dynamic registration are supported. Hosted
+client metadata, confidential clients, and downstream service-account setup are
+deferred. Check Connection never starts interactive authorization.
+
+The connections credential adapter uses pinned zalando/go-keyring v0.2.8 and
+existing oauth2 types. The narrow SecretStore interface permits temporary fixture
+substitution; production has no plaintext fallback. Tokens and OAuth refresh
+configuration are bound to a hash of connection ID, endpoint, and authentication
+settings. Expired tokens refresh under the discovery operation's context; the
+replacement token is persisted before use. Small immutable credential chunks
+accommodate native keyring item limits, with a final pointer published only after
+all chunks are written. Failed staging preserves the previous login. Sign-out
+disables the pointer before removing chunks; cleanup failures are visible.
+Credential-store calls are synchronous native operations and may require OS
+interaction; cancellation is checked between calls. A timed-out host shutdown
+reports cleanup failure rather than claiming that an OS prompt was canceled.
+
+Changing an OAuth binding removes its old credentials before publishing settings.
+A subsequent configuration write failure may require signing into the unchanged
+connection again, but cannot transfer credentials to the new endpoint. Provider
+authorization and local sign-out are distinct. Authentication is not tool-call
+approval, and these connections are not yet passed to generation or child apps.
+
 ## CLI generation
 
 CLI create uses the same provider and GenerateCode as the home screen. It checks
@@ -116,8 +180,9 @@ Generation failure, build failure, and cancellation never publish an app.
   project library, review, and terminal handoff requests.
 - internal/cli: Cobra commands, session workspace ownership, terminal handoff,
   child lifetime, and standalone MCP tool discovery.
-- internal/mcpclient: explicit local server connection and paginated tool/schema
-  discovery using the official SDK. No tool-call entry point is exposed.
+- internal/connections: saved connection settings and OS credential persistence.
+- internal/mcpclient: stdio/HTTP discovery, bounded sessions, and explicit browser
+  OAuth using the official SDK. No tool-call entry point is exposed.
 
 The former internal/app and internal/localapp packages, JSON generation prompts,
 component renderer, collection mutations, and MCP form execution are removed.
