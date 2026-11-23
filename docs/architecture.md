@@ -28,8 +28,8 @@ strict Structured Outputs and the existing gpt-6.1-sol/TUILOR_MODEL configuratio
 The JSON envelope carries success/name/source/dependencies or unsupported/reason,
 not terminal components. New responses also carry integration requirements, documentation URLs, a data-schema JSON string and an empty initial-state JSON string. The source contract requests one final Go file with
 one package/import section and newModel factory, not drafts, patches or the host
-starter. A small compiling reference demonstrates the pinned widget and storage
-APIs while leaving layout/domain choices open. The response budget is 16,384 tokens.
+starter. Three compiling reference compositions demonstrate the pinned widget,
+storage and styling APIs while leaving layout/domain choices open. The response budget is 16,384 tokens.
 Structured Outputs constrains the envelope; parsing, source/import checks and
 compilation establish separate properties. None proves safety or user intent.
 
@@ -279,3 +279,39 @@ internal/filelock OS implementation is also used by retained local storage.
 Tuilor owns locks during launch, snapshot copying and publication; stale trials
 are rejected rather than merged. Local data migrations and concurrent merging
 are deliberately unsupported.
+
+## Guided connections and portable UI helpers (ADR 0013)
+
+Integration requirements may include setup documentation/credential URLs, a credential
+label, permission suggestions and instructions. Strict generation requires these
+nonsecret fields; older saved projects without them remain valid. URLs and guidance
+are bounded and validated locally, escaped on display and treated as untrusted.
+The connection screen pins the actual destination, keeps errors visible, scrolls
+instructions and focuses only the credential or Connect action. External setup links
+show the parsed host and open only after explicit selection. GitHub uses the existing
+host-written device flow; custom OAuth is never generated or simulated.
+
+After explicit connection approval, Store.Connect authenticates and publishes
+configuration, cleaning new credential entries on publication failure. Failures keep
+inputs and the compiled candidate. User-approved endpoint/auth changes live in the
+project's connection_overrides, separately from AI requirements and the build key.
+Runtime resolution validates effective requirements and saved connections before
+passing credentials to the child. Revision trials retain approvals only when the
+original integration proposal is unchanged. No extra AI request is needed to connect.
+The OAuth HTTP transport binds operation cancellation even when the pinned SDK's
+initial device-code request lacks a context; response close releases that binding.
+
+New source specs declare ui_version:1. Codeapp writes ui.go containing pure formatting
+helpers for palette, panels, tabs, compact tables, status and wrapped keyboard hints.
+The file is copied into saved/revision projects and included in compilation and cache
+fingerprints. The ui prefix followed by an uppercase letter is reserved for these
+helpers only in opted-in projects. Existing version-zero projects keep their own
+source/helper behavior; repairs/revisions preserve their helper version. A future
+incompatible contract must add a new version. Generated code remains free to compose
+any layout and owns widget state, focus, scrolling, responsive behavior and data.
+
+Generation receives the exact UI helper contract plus three compiling composition
+examples: a review desk, a lane board and an editable document rail. Instructions
+favor distinctive palettes, useful density, clear hierarchy and keyboard paths over
+an arbitrary source line budget. NO_COLOR/TERM=dumb and small-terminal fallbacks
+remain part of the contract. There is no automatic paid visual critique or repair.

@@ -1,0 +1,225 @@
+package main
+
+import (
+	"os"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// UI helpers v1: pure formatting, no application state or prescribed layout.
+type uiTheme struct {
+	Ink, Muted, Accent, Secondary, Surface, Success, Warning, Error lipgloss.TerminalColor
+}
+
+var uiSGR = regexp.MustCompile("\x1b\\[[0-9;:]*m")
+
+// Remove colors without losing bold, underline or the reversed input cursor.
+func uiMonochrome(sequence string) string {
+	parts := strings.Split(sequence[2:len(sequence)-1], ";")
+	kept := []string{}
+	for i := 0; i < len(parts); i++ {
+		code, _ := strconv.Atoi(strings.Split(parts[i], ":")[0])
+		if code == 38 || code == 48 || code == 58 {
+			if !strings.Contains(parts[i], ":") && i+1 < len(parts) {
+				switch parts[i+1] {
+				case "5":
+					i += 2
+				case "2":
+					i += 4
+				}
+			}
+			continue
+		}
+		if (code >= 30 && code <= 37) || (code >= 40 && code <= 47) || (code >= 90 && code <= 107) || code == 39 || code == 49 || code == 59 {
+			continue
+		}
+		kept = append(kept, parts[i])
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+	return "\x1b[" + strings.Join(kept, ";") + "m"
+}
+
+func uiNoColor() bool {
+	_, disabled := os.LookupEnv("NO_COLOR")
+	return disabled || os.Getenv("TERM") == "dumb"
+}
+
+func uiPalette(accent, secondary string) uiTheme {
+	return uiTheme{
+		Ink:    lipgloss.AdaptiveColor{Light: "#202532", Dark: "#E8EDF2"},
+		Muted:  lipgloss.AdaptiveColor{Light: "#596477", Dark: "#9CAABD"},
+		Accent: lipgloss.Color(accent), Secondary: lipgloss.Color(secondary),
+		Surface: lipgloss.AdaptiveColor{Light: "#E8ECF1", Dark: "#242C39"},
+		Success: lipgloss.AdaptiveColor{Light: "#17633D", Dark: "#8DDEAA"},
+		Warning: lipgloss.AdaptiveColor{Light: "#875619", Dark: "#F0C778"},
+		Error:   lipgloss.AdaptiveColor{Light: "#B72B40", Dark: "#FF8794"},
+	}
+}
+
+func uiPaint(color lipgloss.TerminalColor) lipgloss.Style {
+	s := lipgloss.NewStyle()
+	if !uiNoColor() {
+		s = s.Foreground(color)
+	}
+	return s
+}
+
+func uiText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' {
+			return ' '
+		}
+		return r
+	}, text)
+}
+
+// uiFit bounds already styled content. Call uiText on untrusted data first.
+func uiFit(text string, width, height int) string {
+	if width <= 0 || height <= 0 {
+		return ""
+	}
+	// Widgets may carry their own default colors. Normalize the final surface,
+	// while text markers and labels retain meaning without SGR styling.
+	if os.Getenv("TERM") == "dumb" {
+		text = uiSGR.ReplaceAllString(text, "")
+	} else if uiNoColor() {
+		text = uiSGR.ReplaceAllStringFunc(text, uiMonochrome)
+	}
+	return lipgloss.NewStyle().MaxWidth(width).MaxHeight(height).Render(text)
+}
+
+func uiTitle(t uiTheme, eyebrow, title, subtitle string, width int) string {
+	lines := []string{}
+	if eyebrow != "" {
+		lines = append(lines, uiPaint(t.Secondary).Render(strings.ToUpper(uiText(eyebrow))))
+	}
+	lines = append(lines, uiPaint(t.Accent).Bold(true).Render(uiText(title)))
+	if subtitle != "" {
+		lines = append(lines, uiPaint(t.Muted).Render(uiText(subtitle)))
+	}
+	return uiFit(strings.Join(lines, "\n"), width, len(lines))
+}
+
+// Dimensions include border and padding. The caller owns scrolling/focus.
+func uiPanel(t uiTheme, title, body string, width, height int, focused bool) string {
+	if width < 6 || height < 4 {
+		return uiFit(body, width, height)
+	}
+	color := t.Muted
+	if focused {
+		color = t.Accent
+	}
+	heading := uiPaint(color).Bold(focused).Render(uiText(title))
+	content := uiFit(heading, width-4, 1) + "\n" + uiFit(body, width-4, height-3)
+	s := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(0, 1).
+		Width(width - 2).Height(height - 2).MaxWidth(width).MaxHeight(height)
+	if !uiNoColor() {
+		s = s.BorderForeground(color)
+	}
+	return s.Render(content)
+}
+
+func uiTabs(t uiTheme, labels []string, active, width int) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	active = max(0, min(active, len(labels)-1))
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		text := " " + uiText(label) + " "
+		style := uiPaint(t.Muted)
+		if i == active {
+			text = "[" + uiText(label) + "]"
+			style = uiPaint(t.Accent).Bold(true)
+		}
+		parts[i] = style.Render(text)
+	}
+	start := 0
+	for start < active && lipgloss.Width(strings.Join(parts[start:], "  ")) > width {
+		start++
+	}
+	return uiFit(strings.Join(parts[start:], "  "), width, 1)
+}
+
+// uiTable scrolls rows to retain selection. Put essential columns first; narrow
+// surfaces omit trailing columns. Detail/form layouts are the app's choice.
+func uiTable(t uiTheme, headers []string, rows [][]string, width, height, selected int) string {
+	if len(headers) == 0 || width < 4 || height < 1 {
+		return ""
+	}
+	columns := min(len(headers), max(1, (width-2)/10))
+	cellWidth := max(1, (width-2)/columns)
+	render := func(cells []string) string {
+		parts := make([]string, columns)
+		for i := range parts {
+			text := ""
+			if i < len(cells) {
+				text = strings.ReplaceAll(uiText(cells[i]), "\n", " ")
+			}
+			parts[i] = lipgloss.NewStyle().Width(cellWidth).MaxWidth(cellWidth).MaxHeight(1).Render(text)
+		}
+		return strings.Join(parts, "")
+	}
+	lines := []string{uiPaint(t.Muted).Bold(true).Render("  " + render(headers))}
+	capacity := max(0, height-1)
+	start := max(0, min(selected, len(rows)-1)-capacity+1)
+	if len(rows) == 0 && capacity > 0 {
+		lines = append(lines, uiPaint(t.Muted).Render("  No records yet"))
+	}
+	for i := start; i < min(len(rows), start+capacity); i++ {
+		marker := "  "
+		style := uiPaint(t.Ink)
+		if i == selected {
+			marker = "> "
+			style = uiPaint(t.Accent).Bold(true).Underline(true)
+		}
+		lines = append(lines, style.Render(marker+render(rows[i])))
+	}
+	return uiFit(strings.Join(lines, "\n"), width, height)
+}
+
+func uiStatus(t uiTheme, kind, message string, width int) string {
+	color := t.Muted
+	switch kind {
+	case "success":
+		color = t.Success
+	case "loading", "warning":
+		color = t.Warning
+	case "error":
+		color = t.Error
+	}
+	return uiFit(uiPaint(color).Render(strings.ToUpper(uiText(kind))+"  "+uiText(message)), width, 1)
+}
+
+type uiKey struct{ Key, Action string }
+
+func uiHelp(t uiTheme, keys []uiKey, width int) string {
+	if width < 1 {
+		return ""
+	}
+	lines := []string{}
+	line := ""
+	for _, key := range keys {
+		item := uiPaint(t.Secondary).Bold(true).Render(uiText(key.Key)) + " " + uiPaint(t.Muted).Render(uiText(key.Action))
+		candidate := item
+		if line != "" {
+			candidate = line + "  /  " + item
+		}
+		if lipgloss.Width(candidate) > width && line != "" {
+			lines = append(lines, line)
+			line = item
+		} else {
+			line = candidate
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return uiFit(strings.Join(lines, "\n"), width, len(lines))
+}

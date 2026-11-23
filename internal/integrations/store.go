@@ -34,6 +34,7 @@ type Requirement struct {
 	BaseURL string `json:"base_url"`
 	Auth    string `json:"auth"`
 	Key     string `json:"key"`
+	Setup   *Setup `json:"setup,omitempty"`
 }
 type Document struct {
 	Version     int          `json:"version"`
@@ -99,7 +100,10 @@ func reservedHeader(key string) bool {
 	return false
 }
 func (r Requirement) Validate() error {
-	return (Connection{r.ID, r.Name, r.Kind, r.BaseURL, r.Auth, r.Key}).Validate()
+	if err := (Connection{r.ID, r.Name, r.Kind, r.BaseURL, r.Auth, r.Key}).Validate(); err != nil {
+		return err
+	}
+	return r.Setup.Validate()
 }
 func (c Connection) Matches(r Requirement) bool {
 	return c.Kind == r.Kind && strings.TrimRight(c.BaseURL, "/") == strings.TrimRight(r.BaseURL, "/") && (c.Kind == "github" || (c.Auth == r.Auth && c.Key == r.Key))
@@ -208,7 +212,7 @@ func Catalog(ctx context.Context) ([]Requirement, error) {
 	}
 	out := []Requirement{}
 	for _, c := range d.Connections {
-		out = append(out, Requirement{c.ID, c.Name, c.Kind, c.BaseURL, c.Auth, c.Key})
+		out = append(out, Requirement{ID: c.ID, Name: c.Name, Kind: c.Kind, BaseURL: c.BaseURL, Auth: c.Auth, Key: c.Key})
 	}
 	return out, nil
 }

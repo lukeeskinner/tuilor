@@ -25,6 +25,10 @@ type apiModel struct {
 	request                                    uint64
 	cancelled                                  bool
 	binding                                    bool
+	guided                                     bool
+	guideFocus, guideScroll                    int
+	guideFollow                                bool
+	linkURL                                    string
 }
 type apiMsg struct {
 	request   uint64
@@ -161,7 +165,7 @@ func (m Model) beginAPI(operation string) (tea.Model, tea.Cmd) {
 	a.code = ""
 	a.message = ""
 	timeout := 10 * time.Second
-	if operation == "signin" {
+	if operation == "signin" || (operation == "connect" && a.editing.Auth == "oauth") {
 		timeout = 5 * time.Minute
 	}
 	if operation == "launch" {
@@ -181,6 +185,7 @@ func (m Model) beginAPI(operation string) (tea.Model, tea.Cmd) {
 	store := a.store
 	project := m.codeProject
 	clientID := os.Getenv("TUILOR_GITHUB_CLIENT_ID")
+	linkURL := a.linkURL
 	events := make(chan apiURLMsg, 1)
 	command := func() tea.Msg {
 		defer close(done)
@@ -188,7 +193,29 @@ func (m Model) beginAPI(operation string) (tea.Model, tea.Cmd) {
 		defer cancel()
 		result := apiMsg{request: request, operation: operation}
 		credentials := integrations.Credentials{}
+		notify := func(url, code string) {
+			select {
+			case events <- apiURLMsg{request, url, code}:
+			case <-ctx.Done():
+				return
+			}
+			browserCtx, stop := context.WithTimeout(ctx, 5*time.Second)
+			defer stop()
+			_ = mcpclient.OpenBrowser(browserCtx, url)
+		}
 		switch operation {
+		case "connect":
+			result.err = store.Connect(ctx, candidate, secret, clientID, credentials, notify)
+		case "use":
+			_, result.err = integrations.ReadyLogin(ctx, candidate, credentials)
+		case "openlink":
+			if _, result.err = integrations.SetupURL(linkURL); result.err == nil {
+				result.err = mcpclient.OpenBrowser(ctx, linkURL)
+				if result.err != nil {
+					result.err = nil
+					result.message = "Browser unavailable. Open this URL manually: " + linkURL
+				}
+			}
 		case "load":
 			result.doc, result.err = store.Load(ctx)
 		case "icons":
@@ -258,22 +285,13 @@ func (m Model) beginAPI(operation string) (tea.Model, tea.Cmd) {
 				result.message = "Configured. Custom API access is checked when an app makes a request."
 			}
 		case "signin":
-			result.err = integrations.SignIn(ctx, selected, clientID, credentials, func(url, code string) {
-				select {
-				case events <- apiURLMsg{request, url, code}:
-				case <-ctx.Done():
-					return
-				}
-				browserCtx, stop := context.WithTimeout(ctx, 5*time.Second)
-				defer stop()
-				_ = mcpclient.OpenBrowser(browserCtx, url)
-			})
+			result.err = integrations.SignIn(ctx, selected, clientID, credentials, notify)
 		case "launch":
 			result.doc, result.err = store.Load(ctx)
 			if result.err != nil {
 				break
 			}
-			_, result.err = integrations.Runtime(ctx, project.Spec.Requirements, project.Bindings)
+			_, result.err = project.RuntimeConnections(ctx)
 			if result.err == nil {
 				release, err := project.Acquire()
 				result.err = err
@@ -288,7 +306,7 @@ func (m Model) beginAPI(operation string) (tea.Model, tea.Cmd) {
 		}
 		return result
 	}
-	if operation == "signin" {
+	if operation == "signin" || (operation == "connect" && candidate.Auth == "oauth") {
 		return m, tea.Batch(command, func() tea.Msg {
 			event, ok := <-events
 			if !ok {
@@ -312,6 +330,10 @@ func (m Model) apiResult(msg apiMsg) (tea.Model, tea.Cmd) {
 	}
 	if a.cancelled {
 		a.message = "Operation canceled."
+		if a.guided {
+			m.screen = "apiguide"
+			return m, nil
+		}
 		if a.operation == "save" {
 			m.screen = "apiform"
 		} else {
@@ -324,6 +346,10 @@ func (m Model) apiResult(msg apiMsg) (tea.Model, tea.Cmd) {
 	}
 	if msg.err != nil {
 		a.message = msg.err.Error()
+		if a.guided && (msg.operation == "connect" || msg.operation == "use" || msg.operation == "openlink") {
+			m.screen = "apiguide"
+			return m, nil
+		}
 		switch msg.operation {
 		case "save":
 			m.screen = "apiform"
@@ -342,6 +368,10 @@ func (m Model) apiResult(msg apiMsg) (tea.Model, tea.Cmd) {
 	a.message = msg.message
 	a.cursor = max(0, min(a.cursor, len(a.doc.Connections)-1))
 	switch msg.operation {
+	case "connect", "use":
+		return m.guideConnected()
+	case "openlink":
+		m.screen = "apiguide"
 	case "launch":
 		m.launchCode = true
 		return m, tea.Quit
@@ -361,7 +391,7 @@ func (m Model) apiResult(msg apiMsg) (tea.Model, tea.Cmd) {
 	case "load":
 		a.action = 0
 		if a.binding {
-			m.screen = "apibind"
+			return m.nextConnection()
 		} else {
 			m.screen = "api"
 		}
@@ -398,7 +428,11 @@ func (m Model) bindingChoices() ([]string, []integrations.Connection) {
 	if m.codeProject == nil || a.requirement >= len(m.codeProject.Spec.Requirements) {
 		return nil, nil
 	}
-	r := m.codeProject.Spec.Requirements[a.requirement]
+	r, err := m.connectionRequirement()
+	if err != nil {
+		a.message = err.Error()
+		return nil, nil
+	}
 	var labels []string
 	var matches []integrations.Connection
 	for _, c := range a.doc.Connections {
@@ -417,6 +451,9 @@ func (m Model) bindingChoices() ([]string, []integrations.Connection) {
 func (m Model) apiKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	a := m.api
 	key := msg.String()
+	if m.screen == "apiguide" {
+		return m.guideKey(msg)
+	}
 	if m.screen == "apibusy" {
 		if key == "esc" {
 			a.cancelled = true
@@ -428,6 +465,18 @@ func (m Model) apiKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if key == "esc" {
 		switch m.screen {
 		case "apiform":
+			if a.guided {
+				m.screen = "apiguide"
+				for i := range a.inputs {
+					a.inputs[i].Blur()
+				}
+				controls := m.guideControls()
+				a.guideFocus = min(a.guideFocus, len(controls)-1)
+				if controls[a.guideFocus] == "credential" {
+					a.inputs[3].Focus()
+				}
+				return m, nil
+			}
 			if a.binding {
 				m.screen = "apibind"
 				a.action = 0
@@ -510,26 +559,20 @@ func (m Model) apiKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			a.action = min(len(labels)-1, a.action+1)
 		case "enter":
 			if a.action < len(matches) {
-				r := m.codeProject.Spec.Requirements[a.requirement]
-				m.codeProject.Bindings[r.ID] = matches[a.action].ID
-				a.requirement++
-				a.action = 0
-				if a.requirement == len(m.codeProject.Spec.Requirements) {
-					return m.beginAPI("launch")
-				}
-				return m, nil
+				next, _ := m.startGuide(matches[a.action])
+				return next.(Model).beginAPI("use")
 			}
 			if a.action == len(matches) && a.requirement < len(m.codeProject.Spec.Requirements) {
-				r := m.codeProject.Spec.Requirements[a.requirement]
-				c := integrations.Connection{ID: integrations.ID(), Name: r.Name, Kind: r.Kind, BaseURL: r.BaseURL, Auth: r.Auth, Key: r.Key}
-				if c.Kind == "github" && os.Getenv("TUILOR_GITHUB_CLIENT_ID") == "" {
-					c.Auth = "bearer"
+				if a.guided {
+					m.screen = "apiguide"
+					return m, nil
 				}
-				a.form(c, m.width)
-				m.screen = "apiform"
-				return m, textinput.Blink
+				r, _ := m.connectionRequirement()
+				c := integrations.Connection{ID: integrations.ID(), Name: r.Name, Kind: r.Kind, BaseURL: r.BaseURL, Auth: r.Auth, Key: r.Key}
+				return m.startGuide(c)
 			}
 			if a.action == len(matches)+1 {
+				a.guided = false
 				m.screen = "api"
 				a.cursor = 0
 			}
@@ -606,6 +649,22 @@ func (m Model) apiKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if a.editing.Auth != "header" && a.editing.Auth != "query" {
 				a.editing.Key = ""
 			}
+			if a.guided {
+				if err := a.editing.Validate(); err != nil {
+					a.message = err.Error()
+					return m, nil
+				}
+				m.screen = "apiguide"
+				a.guideFocus = 0
+				a.guideFollow = true
+				for i := range a.inputs {
+					a.inputs[i].Blur()
+				}
+				if a.editing.Auth != "none" && a.editing.Auth != "oauth" {
+					a.inputs[3].Focus()
+				}
+				return m, textinput.Blink
+			}
 			return m.beginAPI("save")
 		}
 	}
@@ -625,6 +684,9 @@ func (m *Model) updateAPIInputs(msg tea.Msg) tea.Cmd {
 	return tea.Batch(commands...)
 }
 func (m Model) apiView() string {
+	if m.screen == "apiguide" {
+		return m.guideView()
+	}
 	a := m.api
 	width := studioWidth(m.width)
 	if m.width < 28 || m.height < 10 {

@@ -28,6 +28,7 @@ type Spec struct {
 	Documentation []string                   `json:"documentation,omitempty"`
 	DataSchema    string                     `json:"data_schema,omitempty"`
 	InitialState  string                     `json:"initial_state,omitempty"`
+	UIVersion     int                        `json:"ui_version,omitempty"`
 }
 
 type Project struct {
@@ -36,17 +37,22 @@ type Project struct {
 	BaseRevision string            `json:"-"`
 	BaseData     string            `json:"-"`
 	Bindings     map[string]string `json:"bindings,omitempty"`
-	Draft        bool              `json:"-"`
-	Kind         string            `json:"kind"`
-	Version      int               `json:"version"`
-	Spec         Spec              `json:"app"`
-	GoVersion    string            `json:"go_version"`
-	BuildKey     string            `json:"build_key"`
-	BinaryHash   string            `json:"binary_hash"`
-	ModuleKey    string            `json:"module_key"`
+	// Overrides record user-approved destination/auth changes, not AI grants.
+	Overrides  map[string]integrations.Requirement `json:"connection_overrides,omitempty"`
+	Draft      bool                                `json:"-"`
+	Kind       string                              `json:"kind"`
+	Version    int                                 `json:"version"`
+	Spec       Spec                                `json:"app"`
+	GoVersion  string                              `json:"go_version"`
+	BuildKey   string                              `json:"build_key"`
+	BinaryHash string                              `json:"binary_hash"`
+	ModuleKey  string                              `json:"module_key"`
 }
 
 func (s Spec) Validate() error {
+	if s.UIVersion != 0 && s.UIVersion != 1 {
+		return fmt.Errorf("unsupported UI helper version")
+	}
 	if strings.TrimSpace(s.Name) == "" || len(s.Name) > 200 || strings.TrimSpace(s.Source) == "" || len(s.Source) > 256*1024 {
 		return fmt.Errorf("generated app requires a name (up to 200 bytes) and source (up to 256 KiB)")
 	}
@@ -125,6 +131,9 @@ func (p *Project) writeSource() error {
 		if err := atomicFile(filepath.Join(p.Dir, name), data, 0600); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
+	}
+	if err := p.writeUI(); err != nil {
+		return err
 	}
 	return p.writeContract()
 }
@@ -210,6 +219,9 @@ func (p *Project) fingerprint() (string, error) {
 	io.WriteString(h, p.starter()+"\x00"+runtime.GOOS+"/"+runtime.GOARCH+"\x00"+p.GoVersion)
 	deps, _ := json.Marshal(p.Spec.Dependencies)
 	h.Write(deps)
+	if p.Spec.UIVersion != 0 {
+		io.WriteString(h, "\x00ui-v1\x00"+UISource())
+	}
 	if p.Spec.DataSchema != "" {
 		metadata, _ := json.Marshal(struct {
 			Schema       string

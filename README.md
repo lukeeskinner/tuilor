@@ -34,7 +34,7 @@ echo
 1. Choose **Create App** and describe its behavior, layout, and keyboard controls.
 2. Enter inserts a newline; **Ctrl+G** starts one billable OpenAI request, which may research public documentation (also billable).
 3. Tuilor checks Go before the paid request, generates source, and compiles it.
-4. If connections are needed, approve a saved connection or add one and sign in. A successful, connected build opens automatically. **Esc** or **Ctrl+C** returns to Tuilor.
+4. If connections are needed, reuse a saved connection or use the focused **Connect [service]** screen. Review the destination and suggested permissions, then sign in or enter the requested credential. A successful, connected build opens automatically. **Esc** or **Ctrl+C** returns to Tuilor.
 5. Choose **Save**, **Run Again**, or **Discard**. Save retains source and trial data.
 6. After saving, Esc opens My Apps with the new app selected.
 
@@ -55,6 +55,12 @@ The AI writes `app.go` with `newModel() (tea.Model, error)`. The host owns main.
 startup/exit, resize delivery, and loadData/saveData helpers. Generated code owns
 the domain state, interactions, and responsive layout. Instructions require
 scrolling, focus visibility, narrow layouts and very-small-terminal fallbacks.
+New projects include a versioned, host-written `ui.go` with optional theme, panel,
+tab, table, status and keyboard-help functions. AI still writes custom layouts and
+behavior. Three compiling composition references demonstrate a split-pane review
+desk, board, and editable document workspace. User styling requests take precedence;
+there is no fixed app template, font requirement, or automatic paid design pass.
+Existing projects keep their current helper contract, including having no UI helpers.
 The default modules are the standard library, Bubble Tea 1.3.10, Bubbles 1.0.0,
 Lip Gloss 1.1.0, and the host JSON Schema validator 0.4.3. Additional modules require an explicit user request and exact
 pinned versions. Tuilor does not install servers automatically; build and launch
@@ -122,7 +128,27 @@ Generated Go still has full OS permissions and can bypass helper conventions.
 
 ## Connections
 
-Open **Settings → Connections → Add integration**:
+Describe the service in your app prompt first. Generation uses public documentation
+to propose the endpoint, authentication, setup links and permission suggestions.
+If the API facts are unclear, provide a public documentation URL in your prompt.
+Custom browser OAuth remains unsupported; Tuilor explains this instead of inventing
+an authentication flow. Generation and compilation happen before credential entry.
+
+The app's **Connect** screen prefills settings and asks only for browser approval
+or a hidden credential. **Advanced** exposes name, endpoint and authentication.
+Explicitly approved destination/auth changes are stored with the app's connection
+bindings, without regeneration or changing compiled source. Saved matches are offered
+first. GitHub **Connect** starts browser sign-in directly; the app is retained if
+sign-in fails or is canceled. A missing OAuth client ID produces an explanation,
+rather than silently switching the app to manual tokens.
+
+Setup instructions are AI suggestions, not verified permissions or grants. Link
+buttons show the actual host; setup/documentation links open only when selected.
+PgUp/PgDn scroll instructions, Tab changes focus, Enter continues, and Esc keeps
+the candidate. Credentials remain outside prompts, source and project files.
+Custom connections are configured, not live-verified, until the app makes a request.
+
+For manual setup and management, open **Settings → Connections → Add integration**:
 
 - **[GH] GitHub:** browser device sign-in or hidden personal access token entry.
   Browser sign-in requires the maintainer's registered OAuth application with device

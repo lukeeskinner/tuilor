@@ -18,8 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/lukeeskinner/tuilor/internal/integrations"
 )
 
 type Dependency struct {
@@ -146,7 +144,7 @@ func validateDependencies(deps []Dependency) error {
 	return nil
 }
 
-func validateSource(source string, deps []Dependency, tool Toolchain) error {
+func validateSource(source string, deps []Dependency, tool Toolchain, uiVersion int) error {
 	file, err := parser.ParseFile(token.NewFileSet(), "app.go", source, parser.ParseComments|parser.AllErrors)
 	if err != nil {
 		return fmt.Errorf("parse generated app: %w", err)
@@ -167,6 +165,12 @@ func validateSource(source string, deps []Dependency, tool Toolchain) error {
 	}
 	if !factory {
 		return fmt.Errorf("app.go must implement newModel() (tea.Model, error)")
+	}
+	// The ui prefix belongs to the host's optional, versioned helper file.
+	for _, object := range file.Scope.Objects {
+		if uiVersion != 0 && strings.HasPrefix(object.Name, "ui") && len(object.Name) > 2 && object.Name[2] >= 'A' && object.Name[2] <= 'Z' {
+			return fmt.Errorf("the ui prefix is reserved for Tuilor styling helpers: %s", object.Name)
+		}
 	}
 	for _, group := range file.Comments {
 		for _, c := range group.List {
@@ -207,7 +211,7 @@ func (p *Project) Build(ctx context.Context, tool Toolchain) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := validateSource(p.Spec.Source, p.Spec.Dependencies, tool); err != nil {
+	if err := validateSource(p.Spec.Source, p.Spec.Dependencies, tool, p.Spec.UIVersion); err != nil {
 		return err
 	}
 	if err := p.writeSource(); err != nil {
@@ -240,6 +244,9 @@ func (p *Project) Build(ctx context.Context, tool Toolchain) error {
 	args := []string{"build", "-mod=readonly", "-trimpath", "-o", temporary, "main.go", "app.go"}
 	if p.Spec.DataSchema != "" {
 		args = append(args, "runtime.go")
+	}
+	if p.Spec.UIVersion == 1 {
+		args = append(args, "ui.go")
 	}
 	if out, err := command(ctx, p.Dir, tool.Path, args...); err != nil {
 		return fmt.Errorf("compile app: %w\n%s", err, out)
@@ -288,7 +295,7 @@ func (p *Project) Run(ctx context.Context, in io.Reader, out, stderr io.Writer) 
 		return err
 	}
 	launchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
-	auth, err := integrations.Runtime(launchCtx, p.Spec.Requirements, p.Bindings)
+	auth, err := p.RuntimeConnections(launchCtx)
 	cancel()
 	if err != nil {
 		return err

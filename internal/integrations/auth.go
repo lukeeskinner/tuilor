@@ -23,8 +23,49 @@ func authContext(ctx context.Context) context.Context {
 	}
 	client.Timeout = 20 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	// oauth2 v0.35's initial DeviceAuth request omits the supplied context.
+	// Bind cancellation at the transport boundary, retaining Client.Timeout's
+	// request context until the response body is closed.
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = authRoundTrip(func(req *http.Request) (*http.Response, error) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		bound, cancel := context.WithCancel(req.Context())
+		stop := context.AfterFunc(ctx, cancel)
+		finish := func() { stop(); cancel() }
+		response, err := base.RoundTrip(req.Clone(bound))
+		if err != nil || response == nil || response.Body == nil {
+			finish()
+		} else {
+			response.Body = authBody{ReadCloser: response.Body, finish: finish}
+		}
+		return response, err
+	})
 	return context.WithValue(ctx, oauth2.HTTPClient, &client)
 }
+
+type authRoundTrip func(*http.Request) (*http.Response, error)
+
+func (f authRoundTrip) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+type authBody struct {
+	io.ReadCloser
+	finish func()
+}
+
+func (b authBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		_ = b.Close()
+	}
+	return n, err
+}
+
+func (b authBody) Close() error { defer b.finish(); return b.ReadCloser.Close() }
 func SignIn(ctx context.Context, s Connection, clientID string, credentials Credentials, notify func(string, string)) error {
 	if err := s.Validate(); err != nil {
 		return err

@@ -124,6 +124,22 @@ func (p *Project) CopyTrial(ctx context.Context, old *Project) error {
 		return err
 	}
 	p.Bindings = maps.Clone(old.Bindings)
+	p.Overrides = maps.Clone(old.Overrides)
+	// Changed integration proposals need fresh approval. Do not carry an old
+	// destination/auth override into a newly proposed service with the same ID.
+	for _, r := range p.Spec.Requirements {
+		matched := false
+		for _, prior := range old.Spec.Requirements {
+			if r.ID == prior.ID && r.Kind == prior.Kind && r.BaseURL == prior.BaseURL && r.Auth == prior.Auth && r.Key == prior.Key {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			delete(p.Bindings, r.ID)
+			delete(p.Overrides, r.ID)
+		}
+	}
 	if old.Root != "" {
 		p.Root = old.Root
 		p.BaseRevision = old.BaseRevision

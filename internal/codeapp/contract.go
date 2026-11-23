@@ -2,6 +2,7 @@ package codeapp
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -10,10 +11,37 @@ import (
 	"strings"
 
 	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/lukeeskinner/tuilor/internal/integrations"
 )
 
 //go:embed runtime.go.txt
 var runtimeSource string
+
+// ConnectionRequirements applies explicit launch-time approvals without changing
+// generated source or invalidating its compiled artifact.
+func (p *Project) ConnectionRequirements() ([]integrations.Requirement, error) {
+	result := append([]integrations.Requirement(nil), p.Spec.Requirements...)
+	for i, r := range result {
+		if approved, ok := p.Overrides[r.ID]; ok {
+			if approved.ID != r.ID || approved.Kind != r.Kind {
+				return nil, fmt.Errorf("invalid connection override")
+			}
+			if err := approved.Validate(); err != nil {
+				return nil, err
+			}
+			result[i] = approved
+		}
+	}
+	return result, nil
+}
+
+func (p *Project) RuntimeConnections(ctx context.Context) ([]integrations.RuntimeConnection, error) {
+	requirements, err := p.ConnectionRequirements()
+	if err != nil {
+		return nil, err
+	}
+	return integrations.Runtime(ctx, requirements, p.Bindings)
+}
 
 func CanonicalSchema(raw string) (string, error) {
 	if len(raw) == 0 || len(raw) > 64*1024 {
@@ -113,6 +141,9 @@ func (p *Project) sourceFiles() []string {
 	if p.Spec.DataSchema != "" {
 		names = append(names, "runtime.go", "data.schema.json")
 	}
+	if p.Spec.UIVersion == 1 {
+		names = append(names, "ui.go")
+	}
 	return names
 }
 func (p *Project) writeContract() error {
@@ -135,8 +166,12 @@ func (p *Project) initializeState() error {
 }
 
 func (p *Project) contractFiles() []string {
-	if p.Spec.DataSchema == "" {
-		return nil
+	var names []string
+	if p.Spec.DataSchema != "" {
+		names = append(names, "runtime.go", "data.schema.json")
 	}
-	return []string{"runtime.go", "data.schema.json"}
+	if p.Spec.UIVersion == 1 {
+		names = append(names, "ui.go")
+	}
+	return names
 }

@@ -195,7 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.err, m.screen = msg.err, "apps"
 	case tea.KeyMsg:
 		key := msg.String()
-		if key == "ctrl+c" || (key == "q" && m.screen != "apiform" && m.screen != "apibusy" && m.screen != "modify" && m.screen != "localapp" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
+		if key == "ctrl+c" || (key == "q" && m.screen != "apiguide" && m.screen != "apiform" && m.screen != "apibusy" && m.screen != "modify" && m.screen != "localapp" && m.screen != "mcpform" && m.screen != "create" && m.screen != "codegenerating" && m.screen != "codebuilding" && m.screen != "codecancel") {
 			if m.loading {
 				m.cancel()
 				m.quitting = true
@@ -375,7 +375,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.modifier.prompt, cmd = m.modifier.prompt.Update(msg)
 		return m, cmd
 	}
-	if m.screen == "apiform" {
+	if m.screen == "apiform" || m.screen == "apiguide" {
 		return m, m.updateAPIInputs(msg)
 	}
 	if m.screen == "mcpform" {
